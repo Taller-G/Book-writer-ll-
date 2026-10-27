@@ -84,7 +84,9 @@ export const STAGES: StageDef[] = [
     title: "Format",
     short: "Set up the print layout",
     description:
-      "Choose trim size, typography and margins for the print edition.",
+      "Decide the physical format — page size, typefaces, margins, folios and " +
+      "book conventions. Every choice is explained and preloaded with proven " +
+      "defaults; accepting them untouched gives a professional result.",
   },
   {
     num: 8,

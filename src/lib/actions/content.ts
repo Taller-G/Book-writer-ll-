@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { getDb } from "../db/client";
 import type { Source } from "../db/schema";
 import { removeSourceFiles, verifyChecksum } from "../files/store";
+import { parseFormatData } from "../format/config";
 import { saveContract, saveStyleProfile } from "../repo/editorial";
 import { addCover, saveFormatConfig, selectCover, setChecklistDone } from "../repo/output";
 import { touchProject } from "../repo/projects";
@@ -149,14 +150,10 @@ export async function saveFormatAction(formData: FormData): Promise<void> {
   const projectId = String(formData.get("projectId") ?? "");
   if (!projectId) return;
   const db = getDb();
-  saveFormatConfig(db, {
-    projectId,
-    trimSize: String(formData.get("trimSize") ?? "6x9in"),
-    fontFamily: String(formData.get("fontFamily") ?? "Garamond"),
-    fontSizePt: Number(formData.get("fontSizePt") ?? 11),
-    lineHeight: Number(formData.get("lineHeight") ?? 1.4),
-    margins: String(formData.get("margins") ?? "{}"),
-  });
+  // The wizard posts the whole configuration as one JSON payload; anything
+  // missing or malformed falls back to the §7 proven defaults.
+  const data = parseFormatData(String(formData.get("formatData") ?? "{}"));
+  saveFormatConfig(db, projectId, data);
   touchProject(db, projectId);
   revalidatePath(stagePath(projectId, 7));
 }

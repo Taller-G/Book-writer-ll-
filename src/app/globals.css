@@ -381,3 +381,206 @@ ul.upload-results li.fail {
 details.card > summary {
   cursor: pointer;
 }
+
+/* Stage 7 — physical format wizard */
+/* The wizard needs room for a side-by-side live preview. */
+.main:has(.format-wizard) {
+  max-width: 1500px;
+}
+
+.format-wizard {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 470px);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.format-preview-pane {
+  position: sticky;
+  top: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+}
+
+@media (max-width: 1250px) {
+  .format-wizard {
+    grid-template-columns: 1fr;
+  }
+  /* Single column: pin the preview on top so it stays visible (live)
+     while the settings below are adjusted. */
+  .format-preview-pane {
+    order: -1;
+    top: 0.5rem;
+    z-index: 10;
+    max-height: 46vh;
+    overflow: auto;
+  }
+}
+
+.page-spread {
+  display: flex;
+  justify-content: center;
+  gap: 2px;
+  background: #ece9e2;
+  border-radius: 8px;
+  padding: 1rem 0.5rem;
+  overflow: auto;
+}
+
+.preview-caption {
+  font-size: 0.82rem;
+  margin: 0.6rem 0 0;
+}
+
+.reco-chip {
+  display: inline-block;
+  background: var(--green-soft);
+  color: var(--green);
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 0.05rem 0.55rem;
+  margin-left: 0.5rem;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.option-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.7rem;
+  margin: 0.6rem 0;
+}
+
+.option-card {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.7rem 0.85rem;
+  cursor: pointer;
+  font-weight: 400;
+  margin: 0;
+}
+
+.option-card.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.option-card input[type="radio"] {
+  margin-right: 0.45rem;
+}
+
+.option-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.option-blurb {
+  display: block;
+  font-size: 0.84rem;
+  margin-top: 0.3rem;
+}
+
+.type-sample {
+  display: block;
+  margin-top: 0.45rem;
+  font-size: 1.02rem;
+}
+
+.warning-box {
+  background: var(--amber-soft);
+  border: 1px solid #ecd9a8;
+  color: var(--amber);
+  border-radius: 8px;
+  padding: 0.7rem 1rem;
+  margin: 0.6rem 0;
+  font-size: 0.92rem;
+}
+
+.check-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  font-weight: 400;
+  font-size: 0.92rem;
+  margin: 0.55rem 0 0;
+}
+
+.check-row input[type="checkbox"] {
+  margin-top: 0.2rem;
+}
+
+.range-hint {
+  display: block;
+  font-size: 0.78rem;
+  margin-top: 0.2rem;
+}
+
+.mini-example {
+  display: block;
+  background: #fffdf8;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.mini-example.serif {
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.mini-example .mini-line {
+  display: block;
+}
+
+.mini-example .mini-line.indent {
+  text-indent: 1.2em;
+}
+
+.mini-example .mini-line.gap {
+  margin-top: 0.7em;
+}
+
+/* Margin diagram: a two-page spread with the text blocks shaded */
+.margin-diagram {
+  margin: 0.6rem 0;
+}
+
+.margin-diagram-spread {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  background: #ece9e2;
+  border-radius: 8px;
+  padding: 0.8rem;
+}
+
+.margin-diagram-page {
+  position: relative;
+  background: #fffdf8;
+  border: 1px solid #d8d4cc;
+}
+
+.margin-diagram-spine {
+  width: 6px;
+  align-self: stretch;
+  background: repeating-linear-gradient(
+    180deg,
+    #b9b2a4 0,
+    #b9b2a4 4px,
+    #d8d4cc 4px,
+    #d8d4cc 8px
+  );
+}
+
+.margin-diagram-text {
+  position: absolute;
+  background: #d9d3c7;
+  border-radius: 2px;
+}
