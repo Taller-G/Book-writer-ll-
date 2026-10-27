@@ -51,7 +51,25 @@ CREATE TABLE IF NOT EXISTS editorial_contracts (
   mode TEXT NOT NULL CHECK (mode IN ('verbatim','prose','hybrid')),
   rules TEXT NOT NULL DEFAULT '',
   notes TEXT NOT NULL DEFAULT '',
-  signed_at TEXT
+  signed_at TEXT,
+  -- Stage 2 decisions (nullable: pre-existing contracts answered only "mode").
+  tone TEXT,
+  destination TEXT,
+  authorship TEXT,
+  rights_notes TEXT NOT NULL DEFAULT '',
+  legal_text TEXT NOT NULL DEFAULT '',
+  version INTEGER NOT NULL DEFAULT 1
+);
+
+-- Immutable snapshot per contract version: the "decisions made, do not
+-- re-discuss" history every later stage can point back to.
+CREATE TABLE IF NOT EXISTS contract_versions (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  snapshot TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (project_id, version)
 );
 
 CREATE TABLE IF NOT EXISTS style_profiles (
@@ -224,15 +242,30 @@ const SOURCE_FILE_COLUMNS: Array<[name: string, type: string]> = [
   ["linked_source_id", "TEXT"],
 ];
 
-function addMissingSourceColumns(db: Database): void {
+// Stage 2 decision columns, added after the editorial_contracts table
+// shipped with only mode/rules/notes.
+const CONTRACT_COLUMNS: Array<[name: string, type: string]> = [
+  ["tone", "TEXT"],
+  ["destination", "TEXT"],
+  ["authorship", "TEXT"],
+  ["rights_notes", "TEXT NOT NULL DEFAULT ''"],
+  ["legal_text", "TEXT NOT NULL DEFAULT ''"],
+  ["version", "INTEGER NOT NULL DEFAULT 1"],
+];
+
+function addMissingColumns(
+  db: Database,
+  table: string,
+  columns: Array<[name: string, type: string]>,
+): void {
   const existing = new Set(
-    (db.pragma("table_info(sources)") as Array<{ name: string }>).map(
+    (db.pragma(`table_info(${table})`) as Array<{ name: string }>).map(
       (c) => c.name,
     ),
   );
-  for (const [name, type] of SOURCE_FILE_COLUMNS) {
+  for (const [name, type] of columns) {
     if (!existing.has(name)) {
-      db.exec(`ALTER TABLE sources ADD COLUMN ${name} ${type}`);
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
     }
   }
 }
@@ -241,7 +274,8 @@ export function applyBootstrap(db: Database): void {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(DDL);
-  addMissingSourceColumns(db);
+  addMissingColumns(db, "sources", SOURCE_FILE_COLUMNS);
+  addMissingColumns(db, "editorial_contracts", CONTRACT_COLUMNS);
   // A server crash mid-job leaves 'running'/'queued' rows behind with no
   // worker attached. Surface them as failed-and-retryable instead of
   // forever-running.

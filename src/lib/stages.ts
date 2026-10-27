@@ -33,8 +33,9 @@ export const STAGES: StageDef[] = [
     title: "Editorial contract",
     short: "Decide how faithful the text stays",
     description:
-      "Choose the editorial mode — verbatim, prose, or hybrid — and write down " +
-      "the rules. Every later change is judged against this contract.",
+      "Answer the four decisions — mode, tone, destination, authorship — and " +
+      "sign the contract. Every later change is judged against it.",
+    jobType: "tone_samples",
   },
   {
     num: 3,

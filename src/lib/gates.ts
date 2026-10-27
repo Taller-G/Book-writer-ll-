@@ -20,10 +20,22 @@ export function canCompleteStage(
       return latestText(db, projectId, "raw")
         ? { ok: true }
         : { ok: false, reason: "Compile your sources into the raw text first." };
-    case 2:
-      return getContract(db, projectId)
+    case 2: {
+      const contract = getContract(db, projectId);
+      if (!contract)
+        return { ok: false, reason: "Sign the editorial contract first." };
+      const open = [
+        !contract.tone && "tone",
+        !contract.destination && "destination",
+        !contract.authorship && "authorship",
+      ].filter(Boolean);
+      return open.length === 0
         ? { ok: true }
-        : { ok: false, reason: "Sign the editorial contract first." };
+        : {
+            ok: false,
+            reason: `Answer the remaining contract question(s): ${open.join(", ")}.`,
+          };
+    }
     case 3:
       return getStyleProfile(db, projectId)
         ? { ok: true }

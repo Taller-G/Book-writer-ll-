@@ -108,10 +108,23 @@ export async function saveContractAction(formData: FormData): Promise<void> {
     | "prose"
     | "hybrid";
   if (!projectId) return;
+  const optional = <T extends string>(name: string): T | undefined => {
+    const value = String(formData.get(name) ?? "");
+    return value ? (value as T) : undefined;
+  };
   const db = getDb();
   saveContract(db, {
     projectId,
     mode,
+    tone: optional<
+      "neutral" | "literary_cinematic" | "academic" | "conversational"
+    >("tone"),
+    destination: optional<"personal" | "short_run" | "isbn" | "digital">(
+      "destination",
+    ),
+    authorship: optional<"own" | "third_party" | "mixed">("authorship"),
+    rightsNotes: String(formData.get("rightsNotes") ?? ""),
+    legalText: String(formData.get("legalText") ?? ""),
     rules: String(formData.get("rules") ?? ""),
     notes: String(formData.get("notes") ?? ""),
   });

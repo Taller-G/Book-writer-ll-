@@ -38,6 +38,12 @@ const REQUEST: AiRequest = {
       rules: "Keep the speaker's voice.",
       notes: "",
       signedAt: null,
+      tone: "neutral",
+      destination: "personal",
+      authorship: "own",
+      rightsNotes: "",
+      legalText: "",
+      version: 1,
     },
     styleProfile: {
       projectId: "p1",
@@ -116,7 +122,8 @@ describe("OpenRouter AI client", () => {
     const body = JSON.parse(String(calls[0].init.body));
     expect(body.model).toBe("anthropic/claude-sonnet-4.6");
     expect(body.messages[0].role).toBe("system");
-    expect(body.messages[0].content).toContain("Editorial contract (mode: hybrid)");
+    expect(body.messages[0].content).toContain("Editorial contract v1");
+    expect(body.messages[0].content).toContain("Mode: hybrid. HYBRID MODE:");
     expect(body.messages[0].content).toContain("Style profile — tone: warm");
     // The key is never placed in the request body.
     expect(String(calls[0].init.body)).not.toContain(TEST_KEY);
