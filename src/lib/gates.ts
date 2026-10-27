@@ -35,7 +35,13 @@ export function canCompleteStage(
     case 5:
       return latestText(db, projectId, "passB")
         ? { ok: true }
-        : { ok: false, reason: "Run Refine Pass B first." };
+        : {
+            ok: false,
+            reason:
+              getContract(db, projectId)?.mode === "prose"
+                ? "Generate the master text first."
+                : "Run Refine Pass B first.",
+          };
     case 6: {
       const pending = countPendingReviews(db, projectId);
       if (pending > 0)

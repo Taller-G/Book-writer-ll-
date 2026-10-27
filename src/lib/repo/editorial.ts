@@ -63,6 +63,80 @@ export function getStyleProfile(
     .get();
 }
 
+// --- Style sample (master-text stage) ---------------------------------------
+// A short AI-written sample the user pre-approves before full generation, and
+// later validates the generated master text against. Stored in the style
+// profile's data JSON so the profile row stays the single source of voice.
+
+export interface StyleSample {
+  text: string;
+  createdAt: string;
+  /** Set when the user approves the sample as the voice benchmark. */
+  approvedAt?: string;
+  /** Set when the user validates the generated master text against it. */
+  validatedAt?: string;
+}
+
+function parseProfileData(profile: StyleProfile): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(profile.data);
+    return typeof parsed === "object" && parsed !== null ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function getStyleSample(db: Db, projectId: string): StyleSample | undefined {
+  const profile = getStyleProfile(db, projectId);
+  if (!profile) return undefined;
+  const sample = parseProfileData(profile).sample as StyleSample | undefined;
+  return sample && typeof sample.text === "string" ? sample : undefined;
+}
+
+function writeStyleSample(db: Db, projectId: string, sample: StyleSample): void {
+  const profile = getStyleProfile(db, projectId);
+  if (!profile) throw new Error("No style profile — save it in stage 3 first.");
+  const data = { ...parseProfileData(profile), sample };
+  db.update(styleProfiles)
+    .set({ data: JSON.stringify(data), updatedAt: now() })
+    .where(eq(styleProfiles.projectId, projectId))
+    .run();
+}
+
+/** Store a freshly generated sample; any previous approval is reset. */
+export function saveStyleSample(db: Db, projectId: string, text: string): void {
+  writeStyleSample(db, projectId, { text, createdAt: now() });
+}
+
+export function approveStyleSample(db: Db, projectId: string): void {
+  const sample = getStyleSample(db, projectId);
+  if (!sample) throw new Error("No style sample to approve — generate one first.");
+  writeStyleSample(db, projectId, { ...sample, approvedAt: now() });
+  appendChange(db, {
+    projectId,
+    what: "Style sample approved as the voice benchmark",
+    where: "stage 5 · style sample",
+    why: "user confirmed the sample matches the intended voice",
+    authorizedBy: "user",
+  });
+}
+
+/** Record that the user validated the generated text against the sample. */
+export function validateAgainstSample(db: Db, projectId: string): void {
+  const sample = getStyleSample(db, projectId);
+  if (!sample?.approvedAt) {
+    throw new Error("There is no approved sample to validate against.");
+  }
+  writeStyleSample(db, projectId, { ...sample, validatedAt: now() });
+  appendChange(db, {
+    projectId,
+    what: "Generated master text validated against the approved style sample",
+    where: "stage 5 · style sample",
+    why: "user compared the result with the pre-approved sample and accepted the voice",
+    authorizedBy: "user",
+  });
+}
+
 export function saveStyleProfile(
   db: Db,
   input: {

@@ -381,3 +381,49 @@ ul.upload-results li.fail {
 details.card > summary {
   cursor: pointer;
 }
+
+/* Outline editor (stage 5, master text) */
+.outline-list {
+  list-style: none;
+  padding: 0;
+  margin: 1rem 0;
+}
+
+.outline-chapter {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.5rem;
+  background: var(--card-bg, #fff);
+  cursor: grab;
+}
+
+.outline-chapter input[type="text"] {
+  width: 100%;
+  font-weight: 600;
+}
+
+.drag-handle {
+  user-select: none;
+  color: #999;
+  padding-top: 0.4rem;
+}
+
+.outline-part {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.outline-summary {
+  margin: 0.3rem 0 0;
+  font-size: 0.9rem;
+}
+
+.outline-meta {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+}

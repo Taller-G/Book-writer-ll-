@@ -1,10 +1,30 @@
 import fs from "node:fs";
 import path from "node:path";
-import { dataDir, type DbHandle } from "../db/client";
-import type { Job } from "../db/schema";
+import { createAiClient, type AiClient } from "../ai";
+import { dataDir, type Db, type DbHandle } from "../db/client";
+import type { EditorialContract, Job, StyleProfile } from "../db/schema";
+import { proposeApparatus } from "../master/apparatus";
+import {
+  assembleMasterText,
+  generateMasterText,
+  generateStyleSample,
+} from "../master/generate";
+import { checkQuoteBalance, normalizeText } from "../master/normalize";
+import { proposeOutline } from "../master/outline";
+import { segmentText } from "../master/segments";
+import { acceptedApparatus, saveProposedApparatus } from "../repo/apparatus";
 import { appendChange } from "../repo/changeLog";
+import {
+  getContract,
+  getStyleProfile,
+  getStyleSample,
+  saveStyleSample,
+} from "../repo/editorial";
 import { markJobRunning, markJobSucceeded } from "../repo/jobs";
+import { ensureRules } from "../repo/normalization";
 import { getFormatConfig, insertPdfVersion, nextPdfVersion } from "../repo/output";
+import { getOutline, parseOutlineData, saveProposedOutline } from "../repo/outline";
+import { getProject } from "../repo/projects";
 import { addReviewItem, countPendingReviews } from "../repo/review";
 import { listSources } from "../repo/sources";
 import { insertText, latestText, nextTextVersion } from "../repo/texts";
@@ -222,18 +242,33 @@ const finalizeText: Executor = async (handle, job) => {
   }
   markJobRunning(db, job.id, { stageKey: "passB", version: passB.version }, passB.version);
   await breathe();
+  // Accepted apparatus sections wrap the text; proposed/discarded ones are
+  // simply left out — discarding a section never breaks the book.
+  const front = acceptedApparatus(db, job.projectId, "front");
+  const back = acceptedApparatus(db, job.projectId, "back");
+  const sectionBlock = (s: { title: string; content: string }) =>
+    `## ${s.title}\n\n${s.content}`;
+  const content = [
+    ...front.map(sectionBlock),
+    passB.content,
+    ...back.map(sectionBlock),
+  ].join("\n\n");
   sqlite.transaction(() => {
     const version = nextTextVersion(db, job.projectId, "final");
     const text = insertText(db, {
       projectId: job.projectId,
       stageKey: "final",
       version,
-      content: passB.content,
+      content,
       jobId: job.id,
     });
     appendChange(db, {
       projectId: job.projectId,
-      what: `FINAL text v${version} frozen from passB v${passB.version}`,
+      what:
+        `FINAL text v${version} frozen from passB v${passB.version}` +
+        (front.length + back.length > 0
+          ? ` with ${front.length + back.length} accepted apparatus section(s)`
+          : ""),
       where: "stage 6 · final text",
       why: "review queue fully resolved; text approved",
       authorizedBy: `job ${job.type} (${job.id})`,
@@ -295,6 +330,269 @@ const exportBook: Executor = async (handle, job) => {
   })();
 };
 
+// --- Master text (spec §4 stage 4 — editorial prose mode) --------------------
+// Three AI executors on pipeline stage 5 plus the apparatus proposal. All AI
+// work happens before the single success transaction; the AI client is
+// resolved through a swappable factory so tests can inject a fake.
+
+let aiFactory: (db: Db) => AiClient = (db) => createAiClient(db);
+
+/** Test seam: replace the AI client used by the master-text executors. */
+export function setAiFactoryForTests(factory?: (db: Db) => AiClient): void {
+  aiFactory = factory ?? ((db) => createAiClient(db));
+}
+
+function envTokenBudget(name: string): number | undefined {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : undefined;
+}
+
+/** Shared gate: the master-text flow needs cleaned text, a prose contract
+ *  and a style profile. */
+function requireProseInputs(
+  db: Db,
+  projectId: string,
+): { passA: NonNullable<ReturnType<typeof latestText>>; contract: EditorialContract; styleProfile: StyleProfile } {
+  const passA = latestText(db, projectId, "passA");
+  if (!passA) {
+    throw new JobInputError(
+      "There is no cleaned text. Run Cleanup Pass A first.",
+    );
+  }
+  const contract = getContract(db, projectId);
+  if (!contract) {
+    throw new JobInputError("Sign the editorial contract first (stage 2).");
+  }
+  if (contract.mode !== "prose") {
+    throw new JobInputError(
+      "Master-text generation only runs in editorial prose mode. " +
+        "This project's contract is set to " + contract.mode + ".",
+    );
+  }
+  const styleProfile = getStyleProfile(db, projectId);
+  if (!styleProfile) {
+    throw new JobInputError("Save the style profile first (stage 3).");
+  }
+  return { passA, contract, styleProfile };
+}
+
+const proposeOutlineExec: Executor = async (handle, job) => {
+  const { db, sqlite } = handle;
+  const { passA, contract, styleProfile } = requireProseInputs(db, job.projectId);
+  const project = getProject(db, job.projectId)!;
+  markJobRunning(db, job.id, { stageKey: "passA", version: passA.version }, passA.version);
+  const segments = segmentText(passA.content);
+  const { outline, aiCalls } = await proposeOutline(
+    aiFactory(db),
+    {
+      projectId: job.projectId,
+      jobId: job.id,
+      bookTitle: project.title,
+      segments,
+      contract,
+      styleProfile,
+    },
+    { analysisInputBudget: envTokenBudget("BOOK_WRITER_ANALYSIS_INPUT_TOKENS") },
+  );
+  sqlite.transaction(() => {
+    saveProposedOutline(db, job.projectId, outline, job.id);
+    appendChange(db, {
+      projectId: job.projectId,
+      what:
+        `AI proposed an outline: ${outline.chapters.length} chapter(s), ` +
+        `${outline.leitmotifs.length} leitmotif(s)`,
+      where: "stage 5 · outline",
+      why: "analysis of themes, repetitions and stories in the cleaned material",
+      authorizedBy: `job ${job.type} (${job.id})`,
+    });
+    markJobSucceeded(
+      db,
+      job.id,
+      { chapters: outline.chapters.length, leitmotifs: outline.leitmotifs.length, aiCalls },
+      passA.version,
+    );
+  })();
+};
+
+const generateStyleSampleExec: Executor = async (handle, job) => {
+  const { db, sqlite } = handle;
+  const { passA, contract, styleProfile } = requireProseInputs(db, job.projectId);
+  markJobRunning(db, job.id, { stageKey: "passA", version: passA.version }, passA.version);
+  const sample = await generateStyleSample(aiFactory(db), {
+    projectId: job.projectId,
+    jobId: job.id,
+    contract,
+    styleProfile,
+    segments: segmentText(passA.content),
+  });
+  sqlite.transaction(() => {
+    saveStyleSample(db, job.projectId, sample);
+    appendChange(db, {
+      projectId: job.projectId,
+      what: "Style sample generated for user approval",
+      where: "stage 5 · style sample",
+      why: "the voice must be pre-approved before master-text generation",
+      authorizedBy: `job ${job.type} (${job.id})`,
+    });
+    markJobSucceeded(db, job.id, { sampleChars: sample.length }, passA.version);
+  })();
+};
+
+const generateMasterTextExec: Executor = async (handle, job) => {
+  const { db, sqlite } = handle;
+  const { passA, contract, styleProfile } = requireProseInputs(db, job.projectId);
+  const outlineRow = getOutline(db, job.projectId);
+  if (!outlineRow || outlineRow.status !== "confirmed") {
+    throw new JobInputError(
+      "The outline must be confirmed before generating the master text.",
+    );
+  }
+  const sample = getStyleSample(db, job.projectId);
+  if (!sample?.approvedAt) {
+    throw new JobInputError(
+      "Generate and approve a style sample before the full generation.",
+    );
+  }
+  const project = getProject(db, job.projectId)!;
+  const outline = parseOutlineData(outlineRow);
+  const rules = ensureRules(db, job.projectId);
+  markJobRunning(
+    db,
+    job.id,
+    {
+      stageKey: "passA",
+      version: passA.version,
+      chapters: outline.chapters.length,
+      enabledRules: rules.filter((r) => r.enabled === 1).map((r) => r.ruleKey),
+    },
+    passA.version,
+  );
+  const segments = segmentText(passA.content);
+  const { chapters, aiCalls } = await generateMasterText(
+    aiFactory(db),
+    {
+      projectId: job.projectId,
+      jobId: job.id,
+      bookTitle: project.title,
+      contract,
+      styleProfile,
+      outline,
+      segments,
+      promptRules: rules,
+      approvedSample: sample.text,
+    },
+    { chapterInputBudget: envTokenBudget("BOOK_WRITER_CHAPTER_INPUT_TOKENS") },
+  );
+  const assembled = assembleMasterText(chapters);
+  const normalized = normalizeText(assembled, rules);
+  const quoteBalance = checkQuoteBalance(normalized.output);
+  sqlite.transaction(() => {
+    const version = nextTextVersion(db, job.projectId, "passB");
+    const text = insertText(db, {
+      projectId: job.projectId,
+      stageKey: "passB",
+      version,
+      content: normalized.output,
+      jobId: job.id,
+    });
+    for (const c of chapters) {
+      appendChange(db, {
+        projectId: job.projectId,
+        what: `Chapter "${c.title}" written (${c.calls} AI call(s))`,
+        where: "stage 5 · master text",
+        why: "master-text generation per the confirmed outline and style profile",
+        authorizedBy: `job ${job.type} (${job.id})`,
+      });
+    }
+    for (const n of normalized.changes) {
+      appendChange(db, {
+        projectId: job.projectId,
+        what: `Normalization "${n.label}" applied (${n.count}×)`,
+        where: "stage 5 · master text",
+        why: "orthotypographic normalization per the project rule list",
+        authorizedBy: `job ${job.type} (${job.id})`,
+      });
+    }
+    if (!quoteBalance.ok) {
+      for (const p of quoteBalance.problems) {
+        addReviewItem(db, {
+          projectId: job.projectId,
+          itemType: "orthotypography",
+          excerpt: "",
+          question: `Quote-balance check failed: ${p}`,
+        });
+      }
+    }
+    appendChange(db, {
+      projectId: job.projectId,
+      what:
+        `Master text passB v${version} generated: ${chapters.length} chapter(s), ` +
+        `${aiCalls} AI call(s); quote-balance check ${quoteBalance.ok ? "passed" : "FAILED"}`,
+      where: "stage 5 · passB text",
+      why: "editorial prose mode master-text generation",
+      authorizedBy: `job ${job.type} (${job.id})`,
+    });
+    markJobSucceeded(
+      db,
+      job.id,
+      {
+        stageTextId: text.id,
+        stageKey: "passB",
+        chapters: chapters.length,
+        aiCalls,
+        normalization: normalized.changes,
+        quoteBalance,
+      },
+      version,
+    );
+  })();
+};
+
+const proposeApparatusExec: Executor = async (handle, job) => {
+  const { db, sqlite } = handle;
+  const { contract, styleProfile } = requireProseInputs(db, job.projectId);
+  const passB = latestText(db, job.projectId, "passB");
+  if (!passB) {
+    throw new JobInputError(
+      "Generate the master text first — the apparatus is proposed around it.",
+    );
+  }
+  const outlineRow = getOutline(db, job.projectId);
+  if (!outlineRow) {
+    throw new JobInputError("There is no outline. Propose and confirm one first.");
+  }
+  const project = getProject(db, job.projectId)!;
+  markJobRunning(db, job.id, { stageKey: "passB", version: passB.version }, passB.version);
+  const { proposals, aiCalls } = await proposeApparatus(aiFactory(db), {
+    projectId: job.projectId,
+    jobId: job.id,
+    bookTitle: project.title,
+    author: project.author,
+    contract,
+    styleProfile,
+    outline: parseOutlineData(outlineRow),
+    masterTextOpening: passB.content.slice(0, 2_000),
+  });
+  sqlite.transaction(() => {
+    const saved = saveProposedApparatus(db, job.projectId, proposals, job.id);
+    for (const s of saved) {
+      appendChange(db, {
+        projectId: job.projectId,
+        what: `Apparatus section "${s.title}" proposed (${s.sectionKey})`,
+        where: `stage 5 · apparatus · ${s.sectionKey}`,
+        why: "editorial apparatus proposal per the §6 guide",
+        authorizedBy: `job ${job.type} (${job.id})`,
+      });
+    }
+    markJobSucceeded(
+      db,
+      job.id,
+      { proposed: saved.map((s) => s.sectionKey), aiCalls },
+      passB.version,
+    );
+  })();
+};
+
 function escapeHtml(s: string): string {
   return s
     .replaceAll("&", "&amp;")
@@ -306,6 +604,10 @@ export const EXECUTORS: Record<string, Executor> = {
   ingest_sources: ingestSources,
   cleanup_pass_a: cleanupPassA,
   refine_pass_b: refinePassB,
+  propose_outline: proposeOutlineExec,
+  generate_style_sample: generateStyleSampleExec,
+  generate_master_text: generateMasterTextExec,
+  propose_apparatus: proposeApparatusExec,
   finalize_text: finalizeText,
   export_book: exportBook,
 };

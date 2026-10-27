@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { getDb } from "@/lib/db/client";
 import { canCompleteStage } from "@/lib/gates";
+import { getContract } from "@/lib/repo/editorial";
 import { getProject, getStageStates } from "@/lib/repo/projects";
 import { getStage, STAGE_COUNT } from "@/lib/stages";
 import { StageFooter } from "@/components/StageFooter";
@@ -9,6 +10,7 @@ import { StageNav } from "@/components/StageNav";
 import { Stage1Sources } from "@/components/stages/Stage1Sources";
 import { Stage2Contract } from "@/components/stages/Stage2Contract";
 import { Stage3Style } from "@/components/stages/Stage3Style";
+import { Stage5MasterText } from "@/components/stages/Stage5MasterText";
 import { Stage6Review } from "@/components/stages/Stage6Review";
 import { Stage7Format } from "@/components/stages/Stage7Format";
 import { Stage8Export } from "@/components/stages/Stage8Export";
@@ -64,18 +66,23 @@ export default async function StagePage({
               intro="Fixes transcription noise — filler words, spacing, punctuation — and records every change in the audit log."
             />
           )}
-          {stageNum === 5 && (
-            <StageTextPass
-              db={db}
-              projectId={id}
-              stage={5}
-              jobType="refine_pass_b"
-              runLabel="Run Refine Pass B"
-              inputKey="passA"
-              outputKey="passB"
-              intro="Shapes structure and flow within the editorial contract. Doubtful edits are sent to the review queue instead of being applied silently."
-            />
-          )}
+          {stageNum === 5 &&
+            // Editorial prose mode gets the master-text flow (spec §4 stage 4);
+            // verbatim/hybrid keep the conservative deterministic refine pass.
+            (getContract(db, id)?.mode === "prose" ? (
+              <Stage5MasterText db={db} projectId={id} />
+            ) : (
+              <StageTextPass
+                db={db}
+                projectId={id}
+                stage={5}
+                jobType="refine_pass_b"
+                runLabel="Run Refine Pass B"
+                inputKey="passA"
+                outputKey="passB"
+                intro="Shapes structure and flow within the editorial contract. Doubtful edits are sent to the review queue instead of being applied silently."
+              />
+            ))}
           {stageNum === 6 && <Stage6Review db={db} projectId={id} />}
           {stageNum === 7 && <Stage7Format db={db} projectId={id} />}
           {stageNum === 8 && <Stage8Export db={db} projectId={id} />}

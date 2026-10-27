@@ -160,6 +160,58 @@ CREATE TABLE IF NOT EXISTS checklist_items (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Stage 5 master text (editorial prose mode): the proposed/confirmed book
+-- structure. One row per project; the chapters live in the data JSON so the
+-- outline editor can reorder/rename/merge atomically.
+CREATE TABLE IF NOT EXISTS outlines (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','confirmed')),
+  data TEXT NOT NULL DEFAULT '{}',
+  job_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Orthotypographic normalization rules, per project. Seeded from a language
+-- rule set (Spanish/RAE by default); 'mechanical' rules run as deterministic
+-- post-processing, 'prompt' rules are injected into generation instructions.
+CREATE TABLE IF NOT EXISTS normalization_rules (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  language TEXT NOT NULL DEFAULT 'es',
+  rule_key TEXT NOT NULL,
+  label TEXT NOT NULL,
+  explanation TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL CHECK (kind IN ('mechanical','prompt')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  position INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (project_id, rule_key)
+);
+CREATE INDEX IF NOT EXISTS idx_normalization_rules_project
+  ON normalization_rules(project_id);
+
+-- Editorial apparatus sections (spec §6): proposed by AI with a plain-language
+-- explanation; the user accepts, edits or discards each one individually.
+-- Only accepted sections are assembled around the text at finalize.
+CREATE TABLE IF NOT EXISTS apparatus_sections (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  section_key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  explanation TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  placement TEXT NOT NULL CHECK (placement IN ('front','back')),
+  status TEXT NOT NULL DEFAULT 'proposed'
+    CHECK (status IN ('proposed','accepted','discarded')),
+  position INTEGER NOT NULL DEFAULT 0,
+  job_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (project_id, section_key)
+);
+CREATE INDEX IF NOT EXISTS idx_apparatus_sections_project
+  ON apparatus_sections(project_id);
+
 -- Async stage jobs: versioned input/output, visible status, retryable.
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,

@@ -153,6 +153,46 @@ export const checklistItems = sqliteTable("checklist_items", {
   createdAt: text("created_at").notNull(),
 });
 
+export const outlines = sqliteTable("outlines", {
+  projectId: text("project_id").primaryKey(),
+  status: text("status", { enum: ["proposed", "confirmed"] })
+    .notNull()
+    .default("proposed"),
+  data: text("data").notNull().default("{}"),
+  jobId: text("job_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const normalizationRules = sqliteTable("normalization_rules", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  language: text("language").notNull().default("es"),
+  ruleKey: text("rule_key").notNull(),
+  label: text("label").notNull(),
+  explanation: text("explanation").notNull().default(""),
+  kind: text("kind", { enum: ["mechanical", "prompt"] }).notNull(),
+  enabled: integer("enabled").notNull().default(1),
+  position: integer("position").notNull().default(0),
+});
+
+export const apparatusSections = sqliteTable("apparatus_sections", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  sectionKey: text("section_key").notNull(),
+  title: text("title").notNull(),
+  explanation: text("explanation").notNull().default(""),
+  content: text("content").notNull().default(""),
+  placement: text("placement", { enum: ["front", "back"] }).notNull(),
+  status: text("status", { enum: ["proposed", "accepted", "discarded"] })
+    .notNull()
+    .default("proposed"),
+  position: integer("position").notNull().default(0),
+  jobId: text("job_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const jobs = sqliteTable("jobs", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),
@@ -207,5 +247,8 @@ export type FormatConfig = typeof formatConfigs.$inferSelect;
 export type PdfVersion = typeof pdfVersions.$inferSelect;
 export type Cover = typeof covers.$inferSelect;
 export type ChecklistItem = typeof checklistItems.$inferSelect;
+export type Outline = typeof outlines.$inferSelect;
+export type NormalizationRule = typeof normalizationRules.$inferSelect;
+export type ApparatusSection = typeof apparatusSections.$inferSelect;
 export type Job = typeof jobs.$inferSelect;
 export type StageProgressRow = typeof stageProgress.$inferSelect;

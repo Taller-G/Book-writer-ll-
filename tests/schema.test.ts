@@ -26,6 +26,9 @@ describe("schema bootstrap", () => {
       "checklist_items",
       "jobs",
       "user_prefs",
+      "outlines",
+      "normalization_rules",
+      "apparatus_sections",
     ]) {
       expect(tables).toContain(t);
     }
