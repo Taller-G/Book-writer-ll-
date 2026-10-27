@@ -17,3 +17,7 @@ What: The SQLite file, the AES key file and exports live under data/ by default;
 ## Rendering requires xelatex (memoir+fontspec) and poppler on the host
 
 What: The render pipeline shells out to xelatex (TeX Live with memoir, fontspec, microtype) and poppler CLI tools (pdftotext, pdffonts, pdfinfo, pdfimages); fc-list is used for font fallback resolution (configured font → Palatino → TeX Gyre Pagella → Times New Roman) · Why: spec §9 validated server-side XeLaTeX+memoir pipeline with poppler-based QA; no JS typesetting library matches print quality · Where: src/lib/render/compile.ts, src/lib/render/qa.ts, src/lib/render/fonts.ts
+
+## BOOK_WRITER_IMAGE_MODEL selects the AI image-generation model
+
+What: AI image generation uses the OpenRouter slug from `BOOK_WRITER_IMAGE_MODEL` (default `google/gemini-2.5-flash-image`), resolved by `imageModelSlug()` — separate from the large/fast text roles because Claude models don't generate images. · Where: src/lib/ai/openrouter.ts (imageModelSlug), used by generateImage
