@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { applyBootstrap } from "@/lib/db/bootstrap";
 import { openDatabase } from "@/lib/db/client";
 import { createProject, getStageStates, listProjects } from "@/lib/repo/projects";
 import { listChecklist } from "@/lib/repo/output";
@@ -39,5 +40,30 @@ describe("schema bootstrap", () => {
     expect(states[1].status).toBe("locked");
 
     expect(listChecklist(handle.db, project.id).length).toBeGreaterThan(0);
+  });
+
+  it("adds render metadata columns to pdf_versions (fresh and legacy DBs)", () => {
+    const fresh = openDatabase(":memory:");
+    const cols = (fresh.sqlite.pragma("table_info(pdf_versions)") as Array<{ name: string }>)
+      .map((c) => c.name);
+    for (const c of ["text_version", "format_hash", "qa_passed", "qa_report_path"]) {
+      expect(cols).toContain(c);
+    }
+    // Legacy DB: table exists without the columns; re-bootstrap adds them.
+    const legacy = openDatabase(":memory:");
+    legacy.sqlite.exec("DROP TABLE pdf_versions");
+    legacy.sqlite.exec(
+      `CREATE TABLE pdf_versions (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, version INTEGER NOT NULL,
+        file_path TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', job_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE (project_id, version)
+      )`,
+    );
+    applyBootstrap(legacy.sqlite);
+    const migrated = (legacy.sqlite.pragma("table_info(pdf_versions)") as Array<{ name: string }>)
+      .map((c) => c.name);
+    for (const c of ["text_version", "format_hash", "qa_passed", "qa_report_path"]) {
+      expect(migrated).toContain(c);
+    }
   });
 });

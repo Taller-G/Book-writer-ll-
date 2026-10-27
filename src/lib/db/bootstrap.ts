@@ -137,6 +137,11 @@ CREATE TABLE IF NOT EXISTS pdf_versions (
   notes TEXT NOT NULL DEFAULT '',
   job_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Render metadata; all nullable because HTML-export rows predate it.
+  text_version INTEGER,
+  format_hash TEXT,
+  qa_passed INTEGER,
+  qa_report_path TEXT,
   UNIQUE (project_id, version)
 );
 
@@ -237,11 +242,34 @@ function addMissingSourceColumns(db: Database): void {
   }
 }
 
+// Render metadata (layout-engine work order). All nullable: rows written by
+// the HTML export predate real PDF rendering and carry none of this.
+const PDF_VERSION_COLUMNS: Array<[name: string, type: string]> = [
+  ["text_version", "INTEGER"],
+  ["format_hash", "TEXT"],
+  ["qa_passed", "INTEGER"],
+  ["qa_report_path", "TEXT"],
+];
+
+function addMissingPdfVersionColumns(db: Database): void {
+  const existing = new Set(
+    (db.pragma("table_info(pdf_versions)") as Array<{ name: string }>).map(
+      (c) => c.name,
+    ),
+  );
+  for (const [name, type] of PDF_VERSION_COLUMNS) {
+    if (!existing.has(name)) {
+      db.exec(`ALTER TABLE pdf_versions ADD COLUMN ${name} ${type}`);
+    }
+  }
+}
+
 export function applyBootstrap(db: Database): void {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(DDL);
   addMissingSourceColumns(db);
+  addMissingPdfVersionColumns(db);
   // A server crash mid-job leaves 'running'/'queued' rows behind with no
   // worker attached. Surface them as failed-and-retryable instead of
   // forever-running.

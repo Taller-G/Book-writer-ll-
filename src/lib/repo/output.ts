@@ -71,6 +71,10 @@ export function insertPdfVersion(
     filePath: string;
     notes?: string;
     jobId?: string;
+    textVersion?: number;
+    formatHash?: string;
+    qaPassed?: number;
+    qaReportPath?: string;
   },
 ): PdfVersion {
   const id = newId();

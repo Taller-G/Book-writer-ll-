@@ -84,7 +84,9 @@ export const STAGES: StageDef[] = [
     title: "Format",
     short: "Set up the print layout",
     description:
-      "Choose trim size, typography and margins for the print edition.",
+      "Choose trim size, typography and margins for the print edition, then " +
+      "render a QA-checked PDF of the approved text.",
+    jobType: "render_pdf",
   },
   {
     num: 8,

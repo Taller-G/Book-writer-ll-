@@ -131,6 +131,11 @@ export const pdfVersions = sqliteTable("pdf_versions", {
   notes: text("notes").notNull().default(""),
   jobId: text("job_id"),
   createdAt: text("created_at").notNull(),
+  // Render metadata; null on rows written by the HTML export.
+  textVersion: integer("text_version"),
+  formatHash: text("format_hash"),
+  qaPassed: integer("qa_passed"),
+  qaReportPath: text("qa_report_path"),
 });
 
 export const covers = sqliteTable("covers", {
