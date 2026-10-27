@@ -2,6 +2,10 @@
 
 A non-obvious pitfall or trap, learned the hard way.
 
+## Reaction detection only decodes WAV; non-WAV recordings are silently skipped
+
+What: src/lib/reactions/wav.ts is a dependency-free PCM WAV codec; detect_reactions and the clip actions try decodeWav and skip a source on failure (mp3/m4a/video need ffmpeg, treated as absent). Reaction↔transcript alignment is proportional (ms ↔ char offset via duration), not forced-alignment, so char_anchor and ambiguous-question clip timings are approximate and rely on human confirmation · Why: spec requires AI-free DSP and the project already treats ffmpeg as possibly-absent; exact alignment is out of scope · Where: src/lib/reactions/wav.ts, src/lib/reactions/detect.ts (msToCharOffset), src/lib/jobs/executors.ts · Learned: to exercise detection in a test, write a WAV via encodeWav + saveOriginal + addFileSource and inject a FakeAiClient for the semantic check (setAiFactoryForTests)
+
 ## Provider error text must be redacted before it reaches an error message
 
 What: The OpenRouter client passes any provider-echoed text through redactSecrets (strips sk-or-*/sk-ant-*/Bearer tokens) before building an error message · Why: job errors are persisted in jobs.error and rendered in the UI — a provider echoing the key back would otherwise leak it into both · Where: src/lib/ai/errors.ts, src/lib/ai/openrouter.ts · Learned: treat provider error bodies as untrusted output that may contain your own secrets

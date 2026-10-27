@@ -2,6 +2,14 @@
 
 A choice made and the reasoning behind it — the path taken over the alternatives.
 
+## Pass B is faithful structuring for verbatim AND hybrid; invariant enforced in code
+
+What: refine_pass_b now applies src/lib/format/passB.ts for both verbatim and hybrid contracts: it inserts paragraph breaks at discourse anchors and genre formatting (reactions *[Laughter]*/*[Applause]*, interviewer questions bold + em dash on their own paragraph) but changes no spoken word. The invariant is 'spoken words' = extractWords() (tokens outside bracketed stage directions and emphasis marks); the executor throws if sameWordSequence(passA, passB) is false. Questions: a standalone single-sentence-paragraph question is interviewer (if marked by a leading dash/label) or ambiguous (unmarked → review_queue itemType 'question' with clip, never formatted); a question embedded in a flowing paragraph is rhetorical and left untouched · Why: spec stage 3.5 'without touching a single word'; the word-preserving transform is safe for both faithful stances, and the old hybrid long-paragraph rewrite heuristic was dropped as out of scope · Where: src/lib/format/passB.ts, src/lib/jobs/executors.ts (refinePassB)
+
+## Pass C flags inconsistencies by severity into one approvable batch — never edits
+
+What: classify_inconsistencies (stage 6) sends passB to the AI (swappable client, bare prompt) and parses a strict JSON array of {severity gross/medium/minor, description, excerpt}; each becomes a review_queue row (itemType 'inconsistency', severity, shared batch_id). resolveBatch accepts/rejects the whole batch in one step. It only flags — the faithful contract forbids rewrites · Why: spec stage 3.6 — gross inconsistencies classified by severity in approvable batches · Where: src/lib/format/passC.ts, src/lib/jobs/executors.ts, src/lib/repo/review.ts (resolveBatch)
+
 ## Stack: Next.js 15 + SQLite (better-sqlite3 + Drizzle)
 
 What: The app is Next.js 15 (App Router, TS) with a single local SQLite file (better-sqlite3 driver, Drizzle for typed queries); no external services · Why: single-user desktop-style product — one full-stack framework plus an embedded DB gives persistence across sessions with zero infra; alternatives (Express+Vite split, Postgres) add moving parts with no benefit at this scale · Where: src/lib/db/client.ts

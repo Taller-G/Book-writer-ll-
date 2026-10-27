@@ -2,6 +2,14 @@
 
 How the system is put together — layers, boundaries, and how data flows.
 
+## Audience-reaction detection: AI-free DSP + a semantic double-evidence track
+
+What: Reaction detection lives in src/lib/reactions/ — dsp.ts (pure, no AI: 50 ms frames, per-frame RMS energy + zero-crossing rate, segment grouping, applause-vs-laughter by envelope modulation), wav.ts (dependency-free PCM WAV decode/encode/slice so clips need no ffmpeg), detect.ts (pairs each acoustic hit with a semantic verdict — is the preceding sentence funny/forceful — via the swappable AiClient). The detect_reactions executor (stage 5) emits only double-evidence candidates to review_queue with their extracted clip and a reactions row (status candidate); confirm/reject and a manual-mark path (origin=manual, quiet rooms) live in actions/content.ts · Why: spec requires acoustic detection be AI-free and candidates require both acoustic and semantic evidence · Where: src/lib/reactions/, src/lib/jobs/executors.ts (detect_reactions), src/lib/repo/reactions.ts · Learned: classify applause (steady wash, low RMS CoV) vs laughter (syllabic, high CoV) by envelope modulation, not ZCR magnitude — ZCR varies too much with sample rate/content
+
+## FINAL lock is per-project editorial state in editorial_locks
+
+What: Closing the text (finalize_text, stage 6) runs stage-closing verification — empty review queue, perfect «» balance (checkQuoteBalance), and final word sequence == approved apparatus+passB words — then writes editorial_locks (locked=1, locked_version). While locked, finalize_text, refine_pass_b, detect_reactions, classify_inconsistencies and the reaction actions all refuse (isLocked/assertUnlocked in src/lib/repo/locks.ts). unlockText is the only way back and appends a change_log entry; re-finalizing then produces a new FINAL version · Why: spec stage 3.6 — a closed text must stay closed until an explicit, logged user action reopens it · Where: src/lib/repo/locks.ts, src/lib/jobs/executors.ts (finalizeText), src/lib/actions/content.ts (unlockTextAction)
+
 ## 8-stage pipeline definition is the single source of stage identity
 
 What: The 8 stages (1 Sources, 2 Editorial contract, 3 Style profile, 4 Cleanup pass A, 5 Refine pass B, 6 Review, 7 Format, 8 Export) live in one module with stable 1-based numbers, slugs and the job type each stage runs · Why: every table (jobs.stage, stage_progress.stage, checklist) and every other work order references stage numbers — they must never be renumbered · Where: src/lib/stages.ts
