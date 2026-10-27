@@ -29,3 +29,7 @@ What: After each ingest, an unlinked counterpart with the same normalized filena
 ## AI calls go through the AiClient seam, never a provider directly
 
 What: All AI-dependent slices call createAiClient(db).complete(request) where the request carries a SystemContext payload (task instructions + editorial contract + style profile) and a model role ('large' for writing/restructuring, 'fast' for mass classification); OpenRouter is the only implementation today and a direct Anthropic provider slots in behind the same interface · Why: spec §9 makes this the seam between the BYOK engine and every other work order — provider swaps must not touch stage code · Where: src/lib/ai/index.ts, src/lib/ai/types.ts
+
+## Render pipeline lives in src/lib/render/, executor stays thin
+
+What: The Stage 7 layout engine is four modules in src/lib/render/ — compose.ts (approved text → memoir/XeLaTeX + word-for-word verification), compile.ts (double xelatex pass + aux-cleanup recovery), qa.ts (poppler-based post-render checks), report.ts (versioned JSON+markdown QA report) — orchestrated by render.ts; the render_pdf executor only reads inputs and commits DB rows · Why: mirrors the ingest convention (pipeline modules out of the executor) and keeps filesystem/subprocess work out of the jobs layer · Where: src/lib/render/, src/lib/jobs/executors.ts
