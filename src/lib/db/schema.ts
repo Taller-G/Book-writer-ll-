@@ -64,6 +64,25 @@ export const editorialContracts = sqliteTable("editorial_contracts", {
   rules: text("rules").notNull().default(""),
   notes: text("notes").notNull().default(""),
   signedAt: text("signed_at"),
+  // Stage 2 decisions; null when the question has not been answered yet.
+  tone: text("tone", {
+    enum: ["neutral", "literary_cinematic", "academic", "conversational"],
+  }),
+  destination: text("destination", {
+    enum: ["personal", "short_run", "isbn", "digital"],
+  }),
+  authorship: text("authorship", { enum: ["own", "third_party", "mixed"] }),
+  rightsNotes: text("rights_notes").notNull().default(""),
+  legalText: text("legal_text").notNull().default(""),
+  version: integer("version").notNull().default(1),
+});
+
+export const contractVersions = sqliteTable("contract_versions", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  version: integer("version").notNull(),
+  snapshot: text("snapshot").notNull(),
+  createdAt: text("created_at").notNull(),
 });
 
 export const styleProfiles = sqliteTable("style_profiles", {
@@ -74,6 +93,28 @@ export const styleProfiles = sqliteTable("style_profiles", {
   notes: text("notes").notNull().default(""),
   data: text("data").notNull().default("{}"),
   updatedAt: text("updated_at").notNull(),
+  voice: text("voice").notNull().default(""),
+  rhythm: text("rhythm").notNull().default(""),
+  punctuation: text("punctuation").notNull().default(""),
+  metaphors: text("metaphors").notNull().default(""),
+  openings: text("openings").notNull().default(""),
+  // JSON array of 3-5 verbatim few-shot excerpts.
+  excerpts: text("excerpts").notNull().default("[]"),
+  status: text("status", { enum: ["draft", "confirmed"] })
+    .notNull()
+    .default("confirmed"),
+  version: integer("version").notNull().default(1),
+  confirmedAt: text("confirmed_at"),
+  sample: text("sample").notNull().default(""),
+});
+
+export const styleRefs = sqliteTable("style_refs", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  name: text("name").notNull(),
+  content: text("content").notNull(),
+  wordCount: integer("word_count").notNull().default(0),
+  createdAt: text("created_at").notNull(),
 });
 
 export const stageTexts = sqliteTable("stage_texts", {
@@ -86,6 +127,7 @@ export const stageTexts = sqliteTable("stage_texts", {
   content: text("content").notNull(),
   jobId: text("job_id"),
   createdAt: text("created_at").notNull(),
+  styleProfileVersion: integer("style_profile_version"),
 });
 
 export const changeLog = sqliteTable("change_log", {
@@ -158,6 +200,46 @@ export const checklistItems = sqliteTable("checklist_items", {
   createdAt: text("created_at").notNull(),
 });
 
+export const outlines = sqliteTable("outlines", {
+  projectId: text("project_id").primaryKey(),
+  status: text("status", { enum: ["proposed", "confirmed"] })
+    .notNull()
+    .default("proposed"),
+  data: text("data").notNull().default("{}"),
+  jobId: text("job_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const normalizationRules = sqliteTable("normalization_rules", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  language: text("language").notNull().default("es"),
+  ruleKey: text("rule_key").notNull(),
+  label: text("label").notNull(),
+  explanation: text("explanation").notNull().default(""),
+  kind: text("kind", { enum: ["mechanical", "prompt"] }).notNull(),
+  enabled: integer("enabled").notNull().default(1),
+  position: integer("position").notNull().default(0),
+});
+
+export const apparatusSections = sqliteTable("apparatus_sections", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  sectionKey: text("section_key").notNull(),
+  title: text("title").notNull(),
+  explanation: text("explanation").notNull().default(""),
+  content: text("content").notNull().default(""),
+  placement: text("placement", { enum: ["front", "back"] }).notNull(),
+  status: text("status", { enum: ["proposed", "accepted", "discarded"] })
+    .notNull()
+    .default("proposed"),
+  position: integer("position").notNull().default(0),
+  jobId: text("job_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const jobs = sqliteTable("jobs", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),
@@ -189,6 +271,7 @@ export const aiUsage = sqliteTable("ai_usage", {
   promptTokens: integer("prompt_tokens").notNull().default(0),
   completionTokens: integer("completion_tokens").notNull().default(0),
   costUsd: real("cost_usd").notNull().default(0),
+  systemPrompt: text("system_prompt").notNull().default(""),
   createdAt: text("created_at").notNull(),
 });
 
@@ -204,7 +287,9 @@ export const userPrefs = sqliteTable("user_prefs", {
 export type Project = typeof projects.$inferSelect;
 export type Source = typeof sources.$inferSelect;
 export type EditorialContract = typeof editorialContracts.$inferSelect;
+export type ContractVersion = typeof contractVersions.$inferSelect;
 export type StyleProfile = typeof styleProfiles.$inferSelect;
+export type StyleRef = typeof styleRefs.$inferSelect;
 export type StageText = typeof stageTexts.$inferSelect;
 export type ChangeLogEntry = typeof changeLog.$inferSelect;
 export type ReviewItem = typeof reviewQueue.$inferSelect;
@@ -212,5 +297,8 @@ export type FormatConfig = typeof formatConfigs.$inferSelect;
 export type PdfVersion = typeof pdfVersions.$inferSelect;
 export type Cover = typeof covers.$inferSelect;
 export type ChecklistItem = typeof checklistItems.$inferSelect;
+export type Outline = typeof outlines.$inferSelect;
+export type NormalizationRule = typeof normalizationRules.$inferSelect;
+export type ApparatusSection = typeof apparatusSections.$inferSelect;
 export type Job = typeof jobs.$inferSelect;
 export type StageProgressRow = typeof stageProgress.$inferSelect;

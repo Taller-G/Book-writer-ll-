@@ -19,6 +19,7 @@ describe("ai_usage spend counter", () => {
       promptTokens: 1000,
       completionTokens: 800,
       costUsd: 0.015,
+      systemPrompt: "",
     });
     recordAiUsage(db, {
       projectId: a.id,
@@ -28,6 +29,7 @@ describe("ai_usage spend counter", () => {
       promptTokens: 200,
       completionTokens: 50,
       costUsd: 0.0005,
+      systemPrompt: "",
     });
     recordAiUsage(db, {
       projectId: b.id,
@@ -36,6 +38,7 @@ describe("ai_usage spend counter", () => {
       promptTokens: 100,
       completionTokens: 100,
       costUsd: 0.002,
+      systemPrompt: "",
     });
 
     expect(getProjectSpend(db, a.id)).toBeCloseTo(0.0155, 6);

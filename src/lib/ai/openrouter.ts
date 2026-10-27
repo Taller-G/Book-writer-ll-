@@ -43,6 +43,8 @@ export interface OpenRouterClientOptions {
     promptTokens: number;
     completionTokens: number;
     costUsd: number;
+    /** The exact system prompt sent — the verifiable call-log payload. */
+    systemPrompt: string;
   }) => void;
   fetchImpl?: typeof fetch;
   /** Injectable for tests so backoff doesn't slow the suite. */
@@ -197,6 +199,7 @@ export class OpenRouterClient implements AiClient {
       jobId: request.jobId,
       role: request.role,
       model,
+      systemPrompt: buildSystemPrompt(request.system),
       ...usage,
     });
     return { text, model, usage };

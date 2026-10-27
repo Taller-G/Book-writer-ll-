@@ -1,20 +1,29 @@
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "../db/client";
 import {
   checklistItems,
   covers,
   formatConfigs,
+  jobs,
   pdfVersions,
   type ChecklistItem,
   type Cover,
   type FormatConfig,
   type PdfVersion,
 } from "../db/schema";
+import {
+  legacyFields,
+  PROVEN_DEFAULTS,
+  serializeFormatData,
+  type FormatConfigData,
+} from "../format/config";
 import { newId, now } from "../util";
 
-const DEFAULT_MARGINS =
-  '{"top":"20mm","bottom":"20mm","inner":"22mm","outer":"16mm"}';
-
+/**
+ * A missing row is seeded with the §7 proven defaults, so a project whose
+ * user accepts everything untouched still ends with that exact configuration
+ * saved. The legacy columns are derived from the same data.
+ */
 export function getFormatConfig(db: Db, projectId: string): FormatConfig {
   const existing = db
     .select()
@@ -23,7 +32,12 @@ export function getFormatConfig(db: Db, projectId: string): FormatConfig {
     .get();
   if (existing) return existing;
   db.insert(formatConfigs)
-    .values({ projectId, margins: DEFAULT_MARGINS, updatedAt: now() })
+    .values({
+      projectId,
+      ...legacyFields(PROVEN_DEFAULTS),
+      data: serializeFormatData(PROVEN_DEFAULTS),
+      updatedAt: now(),
+    })
     .run();
   return db
     .select()
@@ -34,20 +48,33 @@ export function getFormatConfig(db: Db, projectId: string): FormatConfig {
 
 export function saveFormatConfig(
   db: Db,
-  input: {
-    projectId: string;
-    trimSize: string;
-    fontFamily: string;
-    fontSizePt: number;
-    lineHeight: number;
-    margins: string;
-  },
+  projectId: string,
+  data: FormatConfigData,
 ): void {
-  getFormatConfig(db, input.projectId);
+  getFormatConfig(db, projectId);
   db.update(formatConfigs)
-    .set({ ...input, updatedAt: now() })
-    .where(eq(formatConfigs.projectId, input.projectId))
+    .set({
+      ...legacyFields(data),
+      data: serializeFormatData(data),
+      updatedAt: now(),
+    })
+    .where(eq(formatConfigs.projectId, projectId))
     .run();
+}
+
+/**
+ * Layout has begun once the project has produced (or attempted) an export —
+ * from that point on a page-size change forces re-iterating the whole layout.
+ */
+export function layoutHasBegun(db: Db, projectId: string): boolean {
+  if (listPdfVersions(db, projectId).length > 0) return true;
+  const exportJob = db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(and(eq(jobs.projectId, projectId), eq(jobs.type, "export_book")))
+    .limit(1)
+    .get();
+  return exportJob !== undefined;
 }
 
 export function listPdfVersions(db: Db, projectId: string): PdfVersion[] {

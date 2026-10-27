@@ -4,10 +4,17 @@ import { revalidatePath } from "next/cache";
 import { getDb } from "../db/client";
 import type { Source } from "../db/schema";
 import { removeSourceFiles, verifyChecksum } from "../files/store";
-import { saveContract, saveStyleProfile } from "../repo/editorial";
+import { parseFormatData } from "../format/config";
+import { appendChange } from "../repo/changeLog";
+import {
+  confirmStyleProfile,
+  getConfirmedStyleProfile,
+  saveContract,
+} from "../repo/editorial";
 import { addCover, saveFormatConfig, selectCover, setChecklistDone } from "../repo/output";
 import { touchProject } from "../repo/projects";
 import { resolveReviewItem } from "../repo/review";
+import { removeStyleRef } from "../repo/styleRefs";
 import {
   addSource,
   getSource,
@@ -16,6 +23,7 @@ import {
   removeSource,
   unlinkSources,
 } from "../repo/sources";
+import { stampTextProfileVersion } from "../repo/texts";
 import { now } from "../util";
 
 function stagePath(projectId: string, stage: number): string {
@@ -108,10 +116,23 @@ export async function saveContractAction(formData: FormData): Promise<void> {
     | "prose"
     | "hybrid";
   if (!projectId) return;
+  const optional = <T extends string>(name: string): T | undefined => {
+    const value = String(formData.get(name) ?? "");
+    return value ? (value as T) : undefined;
+  };
   const db = getDb();
   saveContract(db, {
     projectId,
     mode,
+    tone: optional<
+      "neutral" | "literary_cinematic" | "academic" | "conversational"
+    >("tone"),
+    destination: optional<"personal" | "short_run" | "isbn" | "digital">(
+      "destination",
+    ),
+    authorship: optional<"own" | "third_party" | "mixed">("authorship"),
+    rightsNotes: String(formData.get("rightsNotes") ?? ""),
+    legalText: String(formData.get("legalText") ?? ""),
     rules: String(formData.get("rules") ?? ""),
     notes: String(formData.get("notes") ?? ""),
   });
@@ -119,16 +140,64 @@ export async function saveContractAction(formData: FormData): Promise<void> {
   revalidatePath(stagePath(projectId, 2));
 }
 
-export async function saveStyleAction(formData: FormData): Promise<void> {
+export async function removeStyleRefAction(formData: FormData): Promise<void> {
+  const projectId = String(formData.get("projectId") ?? "");
+  const refId = String(formData.get("refId") ?? "");
+  if (!refId) return;
+  removeStyleRef(getDb(), refId);
+  revalidatePath(stagePath(projectId, 3));
+}
+
+/**
+ * Confirm the style profile exactly as the user reviewed/adjusted it in the
+ * plain-language form. Excerpts arrive one per block, separated by blank
+ * lines; at most 5 are kept as the few-shot set.
+ */
+export async function confirmStyleAction(formData: FormData): Promise<void> {
   const projectId = String(formData.get("projectId") ?? "");
   if (!projectId) return;
+  const excerpts = String(formData.get("excerpts") ?? "")
+    .split(/\n\s*\n/)
+    .map((e) => e.trim())
+    .filter(Boolean)
+    .slice(0, 5);
   const db = getDb();
-  saveStyleProfile(db, {
-    projectId,
+  confirmStyleProfile(db, projectId, {
     tone: String(formData.get("tone") ?? ""),
     register: String(formData.get("register") ?? ""),
     person: String(formData.get("person") ?? ""),
     notes: String(formData.get("notes") ?? ""),
+    voice: String(formData.get("voice") ?? ""),
+    rhythm: String(formData.get("rhythm") ?? ""),
+    punctuation: String(formData.get("punctuation") ?? ""),
+    metaphors: String(formData.get("metaphors") ?? ""),
+    openings: String(formData.get("openings") ?? ""),
+    excerpts,
+  });
+  touchProject(db, projectId);
+  revalidatePath(stagePath(projectId, 3));
+}
+
+/**
+ * The user chose to KEEP a text that was written under an older style
+ * profile: stamp it with the current profile version and record the decision
+ * in the audit log. The text itself is untouched.
+ */
+export async function keepTextProfileAction(formData: FormData): Promise<void> {
+  const projectId = String(formData.get("projectId") ?? "");
+  const textId = String(formData.get("textId") ?? "");
+  const stageKey = String(formData.get("stageKey") ?? "");
+  if (!projectId || !textId) return;
+  const db = getDb();
+  const profile = getConfirmedStyleProfile(db, projectId);
+  if (!profile) return;
+  stampTextProfileVersion(db, textId, profile.version);
+  appendChange(db, {
+    projectId,
+    what: `Kept ${stageKey} text written under an older style profile (now counted as v${profile.version})`,
+    where: `style profile · ${stageKey} text`,
+    why: "user chose to keep the text instead of regenerating it after a profile change",
+    authorizedBy: "user",
   });
   touchProject(db, projectId);
   revalidatePath(stagePath(projectId, 3));
@@ -149,14 +218,10 @@ export async function saveFormatAction(formData: FormData): Promise<void> {
   const projectId = String(formData.get("projectId") ?? "");
   if (!projectId) return;
   const db = getDb();
-  saveFormatConfig(db, {
-    projectId,
-    trimSize: String(formData.get("trimSize") ?? "6x9in"),
-    fontFamily: String(formData.get("fontFamily") ?? "Garamond"),
-    fontSizePt: Number(formData.get("fontSizePt") ?? 11),
-    lineHeight: Number(formData.get("lineHeight") ?? 1.4),
-    margins: String(formData.get("margins") ?? "{}"),
-  });
+  // The wizard posts the whole configuration as one JSON payload; anything
+  // missing or malformed falls back to the §7 proven defaults.
+  const data = parseFormatData(String(formData.get("formatData") ?? "{}"));
+  saveFormatConfig(db, projectId, data);
   touchProject(db, projectId);
   revalidatePath(stagePath(projectId, 7));
 }

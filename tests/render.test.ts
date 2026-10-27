@@ -4,7 +4,8 @@ import path from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { openDatabase, type DbHandle } from "@/lib/db/client";
 import { enqueueAndRun } from "@/lib/jobs/runner";
-import { listPdfVersions } from "@/lib/repo/output";
+import { PROVEN_DEFAULTS } from "@/lib/format/config";
+import { listPdfVersions, saveFormatConfig } from "@/lib/repo/output";
 import { createProject } from "@/lib/repo/projects";
 import { insertText } from "@/lib/repo/texts";
 import { composeBook, CompositionMismatchError } from "@/lib/render/compose";
@@ -80,6 +81,19 @@ describe("render_pdf end to end", () => {
     expect(toc.passed).toBe(true);
     const md = fs.readFileSync(v.qaReportPath!, "utf8");
     expect(md).toContain("✅ PASS");
+  }, 180_000);
+
+  it("renders through the Stage 7 format wizard's proven defaults (A5, legacy columns in sync)", async () => {
+    seedFinalText();
+    // Save format the way the wizard does: the rich data model, with the
+    // legacy columns (trim_size = page-size id, font family, margins) derived
+    // from it — which is what the render executor reads.
+    saveFormatConfig(handle.db, projectId, PROVEN_DEFAULTS);
+    const job = await runRender();
+    expect(job.status).toBe("succeeded");
+    const v = listPdfVersions(handle.db, projectId)[0];
+    expect(v.qaPassed).toBe(1); // A5 trim resolved, EB Garamond fell back to an installed serif
+    expect(fs.existsSync(v.filePath)).toBe(true);
   }, 180_000);
 
   it("a one-word discrepancy between approved and composed text aborts the render naming the position", async () => {

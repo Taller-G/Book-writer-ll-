@@ -90,11 +90,16 @@ interface TrimSize {
   height: string;
 }
 
+// Keys cover both the page-size IDs the Stage 5/7 format wizard writes into
+// the legacy trim_size column (A5, 12x18cm, 15x23cm) and the earlier inch
+// presets, so the trim size the user chose is honoured verbatim.
 const TRIM_SIZES: Record<string, TrimSize> = {
+  A5: { width: "148mm", height: "210mm" },
+  "12x18cm": { width: "120mm", height: "180mm" },
+  "15x23cm": { width: "150mm", height: "230mm" },
   "5x8in": { width: "5in", height: "8in" },
   "5.5x8.5in": { width: "5.5in", height: "8.5in" },
   "6x9in": { width: "6in", height: "9in" },
-  A5: { width: "148mm", height: "210mm" },
 };
 
 // memoir's supported point-size class options (basic set).
@@ -144,7 +149,7 @@ export function composeBook(
   meta: { title: string; author: string },
 ): Composition {
   const model = parseBook(approvedText);
-  const trim = TRIM_SIZES[format.trimSize] ?? TRIM_SIZES["6x9in"];
+  const trim = TRIM_SIZES[format.trimSize] ?? TRIM_SIZES.A5;
   const margins = parseMargins(format.margins);
   const font = resolveFont(format.fontFamily);
   const sizePt = MEMOIR_SIZES.reduce((best, s) =>
