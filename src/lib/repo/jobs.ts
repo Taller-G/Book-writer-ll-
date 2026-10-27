@@ -17,9 +17,10 @@ export function createJob(
     type: string;
     retryOf?: string;
     attempt?: number;
-    /** Request parameters the executor reads before it overwrites `input`
-     *  with its running snapshot (e.g. which concept to regenerate). */
-    params?: Record<string, unknown>;
+    /** Parameters the job needs at creation, stored in `input`, which the
+     *  executor reads before it overwrites `input` with its running snapshot
+     *  (e.g. an image prompt, or which cover concept to regenerate). */
+    params?: unknown;
   },
 ): Job {
   const id = newId();
@@ -31,7 +32,7 @@ export function createJob(
       type: input.type,
       retryOf: input.retryOf,
       attempt: input.attempt ?? 1,
-      input: input.params ? JSON.stringify(input.params) : "{}",
+      ...(input.params !== undefined ? { input: JSON.stringify(input.params) } : {}),
       createdAt: now(),
     })
     .run();

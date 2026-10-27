@@ -135,6 +135,10 @@ CREATE TABLE IF NOT EXISTS change_log (
   "where" TEXT NOT NULL,
   why TEXT NOT NULL,
   authorized_by TEXT NOT NULL,
+  -- Optional structured classification of the change (e.g. the Pass A
+  -- transcription-error taxonomy ASR/NOM/REC/NORM) so the change-log UI can
+  -- render a badge; NULL for general audit entries.
+  category TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_change_log_project ON change_log(project_id);
@@ -152,6 +156,11 @@ BEGIN
   SELECT RAISE(ABORT, 'change_log is append-only: deletes are not allowed');
 END;
 
+-- The review queue is the seam every doubt producer (audio doubts, reaction
+-- candidates, ambiguous questions, punctuation batches, low-dpi images) emits
+-- into. Rich fields below describe one human decision: the doubtful span with
+-- its validated context, A/B options, the audio anchor used to locate a clip
+-- (NOT the drifting raw timestamp), and how it was finally resolved.
 CREATE TABLE IF NOT EXISTS review_queue (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -162,9 +171,71 @@ CREATE TABLE IF NOT EXISTS review_queue (
     CHECK (status IN ('pending','accepted','rejected')),
   resolution_note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  resolved_at TEXT
+  resolved_at TEXT,
+  -- Pass C classifies inconsistencies by severity; reaction/question items
+  -- carry the audio clip for confirmation; batch_id groups a Pass C run into
+  -- one approvable batch. All nullable: pre-existing items have none.
+  severity TEXT,
+  clip_path TEXT,
+  batch_id TEXT,
+  ref_id TEXT,
+  -- The doubtful span and the validated text around it, for the card.
+  context_before TEXT NOT NULL DEFAULT '',
+  doubtful_text TEXT NOT NULL DEFAULT '',
+  context_after TEXT NOT NULL DEFAULT '',
+  -- JSON array of resolution options [{id,label,value}] (option A / option B).
+  options TEXT NOT NULL DEFAULT '[]',
+  -- Which stage text the span lives in, so a resolution can be applied to it.
+  stage_key TEXT,
+  -- Audio-doubt locating: the source, the validated neighbouring text used as
+  -- the anchor, and the raw interpolated timestamp (unreliable, drifts ±30s).
+  source_id TEXT,
+  anchor_before TEXT NOT NULL DEFAULT '',
+  anchor_after TEXT NOT NULL DEFAULT '',
+  raw_timestamp REAL,
+  -- How it was resolved: option_a|option_b|leave_as_is|cut_sentence|free_text|
+  -- approve|reject (plus legacy accepted|rejected), and the applied value.
+  resolution TEXT,
+  resolution_value TEXT NOT NULL DEFAULT '',
+  -- Stable content fingerprint so a span resolved "leave as is" is never
+  -- flagged again in a later pass over the same text.
+  dedupe_key TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_review_queue_project ON review_queue(project_id);
+
+-- Audience reactions (spec §4 stage 3.4). Acoustic detection (server-side DSP,
+-- no AI) proposes candidates; confirmed reactions are inserted into Pass B as
+-- *[Laughter]* / *[Applause]*. Manual marks (quiet rooms) land here too.
+CREATE TABLE IF NOT EXISTS reactions (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_id TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('laughter','applause')),
+  start_ms INTEGER NOT NULL DEFAULT 0,
+  end_ms INTEGER NOT NULL DEFAULT 0,
+  clip_path TEXT,
+  acoustic TEXT NOT NULL DEFAULT '{}',
+  semantic TEXT NOT NULL DEFAULT '',
+  origin TEXT NOT NULL DEFAULT 'acoustic' CHECK (origin IN ('acoustic','manual')),
+  status TEXT NOT NULL DEFAULT 'candidate'
+    CHECK (status IN ('candidate','confirmed','rejected')),
+  char_anchor INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  confirmed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_reactions_project ON reactions(project_id);
+
+-- The FINAL lock (spec §4 stage 3.6), the editorial-contract-level state that
+-- closes the text. A locked project refuses any text-producing pass; reopening
+-- requires an explicit user unlock, and every post-closure touch-up is logged.
+CREATE TABLE IF NOT EXISTS editorial_locks (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  locked INTEGER NOT NULL DEFAULT 0,
+  locked_version INTEGER,
+  locked_at TEXT,
+  unlocked_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 CREATE TABLE IF NOT EXISTS format_configs (
   project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
@@ -185,13 +256,52 @@ CREATE TABLE IF NOT EXISTS pdf_versions (
   notes TEXT NOT NULL DEFAULT '',
   job_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  -- Render metadata; all nullable because HTML-export rows predate it.
+  -- Render metadata (Stage 6.1–6.2 layout engine); nullable because HTML-export
+  -- rows predate it.
   text_version INTEGER,
   format_hash TEXT,
   qa_passed INTEGER,
   qa_report_path TEXT,
+  -- Preview/correction-cycle fields (Stage 6.3). pages is a JSON array of
+  -- per-page text (the deterministic paginator's output), enabling the spread
+  -- viewer, the page-by-page visual diff and the page count. qa/diff hold the
+  -- QA-suite result and the diff against the previous version, built at compile.
+  pages TEXT NOT NULL DEFAULT '[]',
+  page_count INTEGER NOT NULL DEFAULT 0,
+  source_text_version INTEGER,
+  kind TEXT NOT NULL DEFAULT 'export'
+    CHECK (kind IN ('export','preview','rollback')),
+  -- When kind = 'rollback', the earlier version this one restored exactly.
+  rolled_back_from INTEGER,
+  qa TEXT NOT NULL DEFAULT '{}',
+  diff TEXT NOT NULL DEFAULT '{}',
   UNIQUE (project_id, version)
 );
+
+-- Persistent correction-cycle conversation, one thread per project. Each user
+-- message may carry an annotation (page_number + region + a marked-region
+-- image) or an attached screenshot. The agent classifies every request as a
+-- content change (reopens the closed master text, needs explicit confirmation)
+-- or a layout change (adjusts the template). Every applied change is also
+-- recorded in the append-only change_log.
+CREATE TABLE IF NOT EXISTS correction_messages (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('user','agent')),
+  body TEXT NOT NULL DEFAULT '',
+  page_number INTEGER,
+  region TEXT,
+  image TEXT,
+  classification TEXT CHECK (classification IN ('content','layout')),
+  status TEXT NOT NULL DEFAULT 'open'
+    CHECK (status IN ('open','awaiting_confirmation','applied','rejected','answered')),
+  pdf_version INTEGER,
+  target_ref TEXT,
+  proposal TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_correction_messages_project
+  ON correction_messages(project_id);
 
 CREATE TABLE IF NOT EXISTS covers (
   id TEXT PRIMARY KEY,
@@ -364,6 +474,49 @@ CREATE TABLE IF NOT EXISTS apparatus_sections (
 CREATE INDEX IF NOT EXISTS idx_apparatus_sections_project
   ON apparatus_sections(project_id);
 
+-- Book images (spec §4 Stage 6.4): illustrations uploaded or AI-generated,
+-- reviewed early to catch artifacts, placed against a passage at a chosen
+-- printed size, reordered by narrative order, and credited by origin. Pixel
+-- dimensions are captured on intake so the printed dpi can be verified before
+-- any render. The image bytes live under data/images/{projectId}/{imageId}/.
+CREATE TABLE IF NOT EXISTS book_images (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  -- Drives the automatic credit line and whether a disclaimer is required.
+  origin TEXT NOT NULL DEFAULT 'own'
+    CHECK (origin IN ('own','ai','third_party')),
+  file_path TEXT NOT NULL,
+  original_name TEXT NOT NULL DEFAULT '',
+  mime_type TEXT NOT NULL DEFAULT '',
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  checksum_sha1 TEXT NOT NULL DEFAULT '',
+  -- Natural pixel dimensions, read from the file header at intake (0 if the
+  -- format was not recognised); the printed-dpi check divides these by the
+  -- printed size at the chosen layout option.
+  width_px INTEGER NOT NULL DEFAULT 0,
+  height_px INTEGER NOT NULL DEFAULT 0,
+  caption TEXT NOT NULL DEFAULT '',
+  alt_text TEXT NOT NULL DEFAULT '',
+  -- Third-party attribution and licence note; feed the credit line verbatim.
+  source_credit TEXT NOT NULL DEFAULT '',
+  license_note TEXT NOT NULL DEFAULT '',
+  -- AI provenance, kept for the AI-origin credit line and the call log.
+  ai_model TEXT NOT NULL DEFAULT '',
+  ai_prompt TEXT NOT NULL DEFAULT '',
+  -- Placement: the passage the image is anchored to and its printed size.
+  anchor_text TEXT NOT NULL DEFAULT '',
+  size_option TEXT NOT NULL DEFAULT 'column'
+    CHECK (size_option IN ('column','half','full')),
+  narrative_order INTEGER NOT NULL DEFAULT 0,
+  -- 'review' until the user places it (so new images land in the review grid
+  -- first); 'placed' once anchored; 'discarded' when caught as an artifact.
+  status TEXT NOT NULL DEFAULT 'review'
+    CHECK (status IN ('review','placed','discarded')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_book_images_project ON book_images(project_id);
+
 -- Async stage jobs: versioned input/output, visible status, retryable.
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
@@ -457,13 +610,50 @@ const ADDED_COLUMNS: Record<string, Array<[name: string, type: string]>> = {
   ],
   stage_texts: [["style_profile_version", "INTEGER"]],
   ai_usage: [["system_prompt", "TEXT NOT NULL DEFAULT ''"]],
-  // Render metadata (layout-engine work order). All nullable: rows written by
-  // the HTML export predate real PDF rendering and carry none of this.
+  // Structured classification for change-log entries (nullable: pre-existing
+  // and general audit rows carry none).
+  change_log: [["category", "TEXT"]],
+  // Columns added to the pre-existing pdf_versions table by two work orders.
+  // CHECK constraints can't be added by ALTER TABLE, so `kind` is a plain TEXT
+  // column here (the repo only ever writes the three valid values).
   pdf_versions: [
+    // Render metadata (Stage 6.1–6.2 layout engine). All nullable: HTML-export
+    // rows predate real PDF rendering and carry none of this.
     ["text_version", "INTEGER"],
     ["format_hash", "TEXT"],
     ["qa_passed", "INTEGER"],
     ["qa_report_path", "TEXT"],
+    // Preview / correction-cycle fields (Stage 6.3).
+    ["pages", "TEXT NOT NULL DEFAULT '[]'"],
+    ["page_count", "INTEGER NOT NULL DEFAULT 0"],
+    ["source_text_version", "INTEGER"],
+    ["kind", "TEXT NOT NULL DEFAULT 'export'"],
+    ["rolled_back_from", "INTEGER"],
+    ["qa", "TEXT NOT NULL DEFAULT '{}'"],
+    ["diff", "TEXT NOT NULL DEFAULT '{}'"],
+  ],
+  // Review-queue contract fields (unified inbox work order). Pre-existing items
+  // shipped with only excerpt/question/status; all new fields are nullable or
+  // defaulted so legacy rows keep working as plain accept/reject items.
+  review_queue: [
+    ["context_before", "TEXT NOT NULL DEFAULT ''"],
+    ["doubtful_text", "TEXT NOT NULL DEFAULT ''"],
+    ["context_after", "TEXT NOT NULL DEFAULT ''"],
+    ["options", "TEXT NOT NULL DEFAULT '[]'"],
+    ["stage_key", "TEXT"],
+    ["source_id", "TEXT"],
+    ["anchor_before", "TEXT NOT NULL DEFAULT ''"],
+    ["anchor_after", "TEXT NOT NULL DEFAULT ''"],
+    ["raw_timestamp", "REAL"],
+    ["resolution", "TEXT"],
+    ["resolution_value", "TEXT NOT NULL DEFAULT ''"],
+    ["dedupe_key", "TEXT NOT NULL DEFAULT ''"],
+    // Audience reactions, Pass C severity and the review-queue clip reference
+    // (stage 3.4-3.6 work order). All nullable: pre-existing items have none.
+    ["severity", "TEXT"],
+    ["clip_path", "TEXT"],
+    ["batch_id", "TEXT"],
+    ["ref_id", "TEXT"],
   ],
 };
 
@@ -487,6 +677,11 @@ export function applyBootstrap(db: Database): void {
   db.pragma("foreign_keys = ON");
   db.exec(DDL);
   addMissingColumns(db);
+  // Index on dedupe_key must come after the column is added (legacy DBs get it
+  // via ALTER above; the DDL's CREATE TABLE IF NOT EXISTS skips existing ones).
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_review_queue_dedupe ON review_queue(project_id, dedupe_key)",
+  );
   // A server crash mid-job leaves 'running'/'queued' rows behind with no
   // worker attached. Surface them as failed-and-retryable instead of
   // forever-running.

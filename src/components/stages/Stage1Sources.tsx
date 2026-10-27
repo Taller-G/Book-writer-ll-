@@ -7,7 +7,7 @@ import {
 } from "@/lib/actions/content";
 import type { Db } from "@/lib/db/client";
 import type { Source } from "@/lib/db/schema";
-import { latestJobForStage } from "@/lib/repo/jobs";
+import { latestJobForStage, latestJobOfType } from "@/lib/repo/jobs";
 import { listSources } from "@/lib/repo/sources";
 import { latestText } from "@/lib/repo/texts";
 import { JobPanel } from "../JobPanel";
@@ -208,6 +208,14 @@ export function Stage1Sources({ db, projectId }: { db: Db; projectId: string }) 
   const sources = listSources(db, projectId);
   const raw = latestText(db, projectId, "raw");
   const latestJob = latestJobForStage(db, projectId, 1);
+  // Recordings still awaiting a transcript — the ASR job fills these in.
+  const untranscribed = sources.filter(
+    (s) =>
+      (s.mediaType === "audio" || s.mediaType === "video") &&
+      !!s.originalPath &&
+      s.content.trim() === "",
+  );
+  const transcribeJob = latestJobOfType(db, projectId, "transcribe_audio");
 
   return (
     <>
@@ -269,6 +277,32 @@ export function Stage1Sources({ db, projectId }: { db: Db; projectId: string }) 
           {sources.map((s) => (
             <SourceCard key={s.id} source={s} all={sources} projectId={projectId} />
           ))}
+        </div>
+      )}
+
+      {(untranscribed.length > 0 || transcribeJob) && (
+        <div className="card" data-testid="transcribe-card">
+          <h2>Transcribe recordings</h2>
+          <p className="muted">
+            {untranscribed.length > 0
+              ? `${untranscribed.length} recording(s) have no transcript yet. ` +
+                "Automatic speech recognition turns them into text with " +
+                "word-level timestamps, recording every step in the audit log."
+              : "All recordings have been transcribed."}
+          </p>
+          <JobPanel
+            projectId={projectId}
+            stage={1}
+            jobType="transcribe_audio"
+            runLabel="Transcribe recordings"
+            latestJob={transcribeJob}
+            disabled={untranscribed.length === 0}
+            disabledReason={
+              untranscribed.length === 0
+                ? "There are no untranscribed recordings."
+                : undefined
+            }
+          />
         </div>
       )}
 

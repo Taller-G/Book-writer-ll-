@@ -8,6 +8,7 @@ import {
   parseMargins,
   verifyComposition,
   type Composition,
+  type PlacedImage,
 } from "./compose";
 import { runQa, type QaReport } from "./qa";
 import { writeQaReport, type QaReportFiles } from "./report";
@@ -17,8 +18,15 @@ import { writeQaReport, type QaReportFiles } from "./report";
 // Pure filesystem/computation — all database writes stay in the executor.
 
 export interface RenderInput {
+  /**
+   * The text to typeset, verified word-for-word against the composition. When
+   * the book has images this is the FINAL text with the credits section already
+   * appended, so the credits are part of the verified text.
+   */
   approvedText: string;
   format: FormatConfig;
+  /** Placed images (spec §4 Stage 6.4), positioned in the body in order. */
+  images?: PlacedImage[];
   meta: { title: string; author: string };
   /** Persistent per-project build dir — aux files live (and get cleaned) here. */
   buildDir: string;
@@ -51,7 +59,12 @@ export function formatHash(format: FormatConfig): string {
 }
 
 export async function renderBook(input: RenderInput): Promise<RenderResult> {
-  const composition = composeBook(input.approvedText, input.format, input.meta);
+  const composition = composeBook(
+    input.approvedText,
+    input.format,
+    input.meta,
+    input.images ?? [],
+  );
   return renderComposed(input, composition);
 }
 

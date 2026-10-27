@@ -74,4 +74,41 @@ describe("schema bootstrap", () => {
       expect(migrated).toContain(c);
     }
   });
+
+  it("adds review-queue contract columns (fresh and legacy DBs)", () => {
+    const contractCols = [
+      "context_before",
+      "doubtful_text",
+      "context_after",
+      "options",
+      "stage_key",
+      "source_id",
+      "anchor_before",
+      "anchor_after",
+      "raw_timestamp",
+      "resolution",
+      "resolution_value",
+      "dedupe_key",
+    ];
+    const fresh = openDatabase(":memory:");
+    const freshCols = (fresh.sqlite.pragma("table_info(review_queue)") as Array<{ name: string }>)
+      .map((c) => c.name);
+    for (const c of contractCols) expect(freshCols).toContain(c);
+
+    // Legacy DB: the original thin review_queue; re-bootstrap adds the columns.
+    const legacy = openDatabase(":memory:");
+    legacy.sqlite.exec("DROP TABLE review_queue");
+    legacy.sqlite.exec(
+      `CREATE TABLE review_queue (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, item_type TEXT NOT NULL DEFAULT 'edit',
+        excerpt TEXT NOT NULL DEFAULT '', question TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending', resolution_note TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')), resolved_at TEXT
+      )`,
+    );
+    applyBootstrap(legacy.sqlite);
+    const migrated = (legacy.sqlite.pragma("table_info(review_queue)") as Array<{ name: string }>)
+      .map((c) => c.name);
+    for (const c of contractCols) expect(migrated).toContain(c);
+  });
 });

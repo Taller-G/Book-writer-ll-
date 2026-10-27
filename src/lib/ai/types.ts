@@ -26,9 +26,19 @@ export interface SystemContext {
   bare?: boolean;
 }
 
+/**
+ * A multimodal message part. Text parts carry prose; image parts carry a data
+ * URI (e.g. a marked PDF region captured in the correction cycle). A plain
+ * string message is shorthand for a single text part, so existing callers are
+ * unaffected.
+ */
+export type AiContentPart =
+  | { type: "text"; text: string }
+  | { type: "image"; dataUri: string };
+
 export interface AiMessage {
   role: "user" | "assistant";
-  content: string;
+  content: string | AiContentPart[];
 }
 
 export interface AiRequest {
@@ -57,8 +67,32 @@ export interface AiResponse {
   usage: AiUsage;
 }
 
+/** A request to generate an image from a text prompt (spec §4 Stage 6.4). */
+export interface AiImageRequest {
+  /** Project the spend is attributed to. */
+  projectId: string;
+  /** Job the call belongs to, when run from a stage job. */
+  jobId?: string;
+  /** The image description. */
+  prompt: string;
+  /** Optional model override; otherwise the app-configured image model. */
+  model?: string;
+}
+
+export interface AiImageResponse {
+  /** The generated image bytes. */
+  data: Buffer;
+  /** e.g. "image/png". */
+  mimeType: string;
+  /** Model that actually served the call. */
+  model: string;
+  usage: AiUsage;
+}
+
 export interface AiClient {
   complete(request: AiRequest): Promise<AiResponse>;
+  /** Generate an image through the same provider seam as text. */
+  generateImage(request: AiImageRequest): Promise<AiImageResponse>;
 }
 
 function safeParseExcerpts(json: string): string[] {

@@ -1,5 +1,6 @@
 import type { Db } from "./db/client";
 import { getConfirmedStyleProfile, getContract } from "./repo/editorial";
+import { imageCreditsGate } from "./repo/images";
 import { listChecklist, listPdfVersions } from "./repo/output";
 import { countPendingReviews } from "./repo/review";
 import { latestText } from "./repo/texts";
@@ -65,6 +66,10 @@ export function canCompleteStage(
     case 7:
       return { ok: true };
     case 8: {
+      // A book with images must carry an accepted credits section — a
+      // discarded or missing one is flagged here, before export.
+      const credits = imageCreditsGate(db, projectId);
+      if (!credits.ok) return credits;
       if (listPdfVersions(db, projectId).length === 0)
         return { ok: false, reason: "Generate at least one export first." };
       const open = listChecklist(db, projectId).filter((c) => !c.done).length;

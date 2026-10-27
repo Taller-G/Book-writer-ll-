@@ -100,6 +100,66 @@ export function saveCoverImage(
   return path.relative(dataDir(), filePath);
 }
 
+// Book images (spec §4 Stage 6.4) live under their own tree, separate from the
+// source inventory: they are book material (placed, credited, rendered), not
+// an input to the text pipeline.
+//
+//   data/images/{projectId}/{imageId}/{filename}
+//
+// Stored immutably (temp file + atomic rename, then read-only) exactly like a
+// source original, so the bytes the dpi check and the renderer read are the
+// bytes that were reviewed.
+
+export function imageDirAbs(projectId: string, imageId: string): string {
+  return path.join(dataDir(), "images", projectId, imageId);
+}
+
+export function saveImageFile(
+  projectId: string,
+  imageId: string,
+  filename: string,
+  buffer: Buffer,
+): StoredOriginal {
+  const dir = imageDirAbs(projectId, imageId);
+  fs.mkdirSync(dir, { recursive: true });
+  const finalName = safeFilename(filename);
+  const finalPath = path.join(dir, finalName);
+  const tempPath = path.join(dir, `.${finalName}.tmp`);
+  fs.writeFileSync(tempPath, buffer, { mode: 0o644 });
+  fs.renameSync(tempPath, finalPath);
+  fs.chmodSync(finalPath, 0o444);
+  return {
+    relativePath: path.relative(dataDir(), finalPath),
+    absolutePath: finalPath,
+    checksumSha1: sha1(buffer),
+    sizeBytes: buffer.length,
+  };
+}
+
+export function readImageFile(relativePath: string): Buffer {
+  return fs.readFileSync(path.join(dataDir(), relativePath));
+}
+
+/** Absolute path for a stored image — graphicx needs an absolute path. */
+export function imageAbsolutePath(relativePath: string): string {
+  return path.join(dataDir(), relativePath);
+}
+
+/** Delete one image's whole file tree (used on removal). */
+export function removeImageFiles(projectId: string, imageId: string): void {
+  const dir = imageDirAbs(projectId, imageId);
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, { recursive: true }) as string[]) {
+    const p = path.join(dir, entry);
+    try {
+      if (fs.statSync(p).isFile()) fs.chmodSync(p, 0o644);
+    } catch {
+      // already gone — nothing to restore
+    }
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 /** Recompute the original's SHA-1 and compare it to the stored checksum. */
 export function verifyChecksum(
   relativePath: string,

@@ -10,9 +10,24 @@ import { getApiKey } from "../repo/prefs";
 import { getModelConfig } from "./config";
 import { AiAuthError } from "./errors";
 import { OpenRouterClient, type OpenRouterClientOptions } from "./openrouter";
-import type { AiClient, AiRequest, AiResponse } from "./types";
+import type {
+  AiClient,
+  AiImageRequest,
+  AiImageResponse,
+  AiRequest,
+  AiResponse,
+} from "./types";
 
-export type { AiClient, AiRequest, AiResponse, SystemContext } from "./types";
+export type {
+  AiClient,
+  AiContentPart,
+  AiImageRequest,
+  AiImageResponse,
+  AiMessage,
+  AiRequest,
+  AiResponse,
+  SystemContext,
+} from "./types";
 export { buildSystemPrompt } from "./types";
 export {
   AiAuthError,
@@ -49,6 +64,12 @@ class ProjectContextClient implements AiClient {
         getConfirmedStyleProfile(this.db, request.projectId),
     };
     return this.inner.complete({ ...request, system });
+  }
+
+  // Image generation carries no editorial system context (the contract and
+  // style profile shape prose, not pictures), so it passes straight through.
+  generateImage(request: AiImageRequest): Promise<AiImageResponse> {
+    return this.inner.generateImage(request);
   }
 }
 
