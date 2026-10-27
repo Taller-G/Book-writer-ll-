@@ -137,6 +137,9 @@ export const changeLog = sqliteTable("change_log", {
   where: text("where").notNull(),
   why: text("why").notNull(),
   authorizedBy: text("authorized_by").notNull(),
+  // Structured classification (e.g. the Pass A taxonomy ASR/NOM/REC/NORM);
+  // null for general audit entries.
+  category: text("category"),
   createdAt: text("created_at").notNull(),
 });
 

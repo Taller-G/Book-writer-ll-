@@ -149,6 +149,43 @@ export function unlinkSources(db: Db, id: string): void {
   db.update(sources).set({ linkedSourceId: null }).where(eq(sources.id, id)).run();
 }
 
+/**
+ * Store an ASR transcription on an audio/video source: the transcript becomes
+ * the source's content (so the existing ingest compile picks it up), and the
+ * word-level timestamps + model land in the metadata JSON for later clip
+ * resolution. Word count and detected language are stamped too.
+ */
+export function saveTranscription(
+  db: Db,
+  id: string,
+  result: {
+    content: string;
+    wordCount: number;
+    language: string | null;
+    words: unknown;
+    model: string;
+    provider: string;
+    transcribedAt: string;
+  },
+): void {
+  mergeSourceMetadata(db, id, {
+    transcription: {
+      model: result.model,
+      provider: result.provider,
+      transcribedAt: result.transcribedAt,
+      words: result.words,
+    },
+  });
+  db.update(sources)
+    .set({
+      content: result.content,
+      wordCount: result.wordCount,
+      language: result.language,
+    })
+    .where(eq(sources.id, id))
+    .run();
+}
+
 /** Merge keys into the source's metadata JSON (e.g. checksum verifications). */
 export function mergeSourceMetadata(
   db: Db,

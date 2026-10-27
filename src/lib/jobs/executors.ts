@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createAiClient, type AiClient } from "../ai";
+import { AiAuthError, createAiClient, type AiClient } from "../ai";
 import { destinationOption, TONES } from "../contract/definitions";
 import { dataDir, type Db, type DbHandle } from "../db/client";
 import type { EditorialContract, Job, StyleProfile } from "../db/schema";
+import { countWords } from "../ingest/extract";
+import { readOriginal } from "../files/store";
 import { proposeApparatus } from "../master/apparatus";
 import {
   assembleMasterText,
@@ -31,10 +33,20 @@ import { getFormatConfig, insertPdfVersion, nextPdfVersion } from "../repo/outpu
 import { getOutline, parseOutlineData, saveProposedOutline } from "../repo/outline";
 import { getProject } from "../repo/projects";
 import { addReviewItem, countPendingReviews } from "../repo/review";
-import { listSources } from "../repo/sources";
+import { listSources, saveTranscription } from "../repo/sources";
 import { listStyleRefs } from "../repo/styleRefs";
 import { insertText, latestText, nextTextVersion } from "../repo/texts";
 import { renderBook } from "../render/render";
+import { createTranscriptionClient } from "../transcription/asr";
+import {
+  applyCorrections,
+  CORRECTION_TYPE_LABELS,
+  parseProposedCorrections,
+  verifyDiffMatchesCorrections,
+  type ApplyResult,
+  type Correction,
+} from "../transcription/corrections";
+import { now } from "../util";
 
 // Baseline deterministic executors — the versioned input/output contract
 // other work orders replace with Claude-powered implementations. An executor
@@ -88,6 +100,80 @@ const ingestSources: Executor = async (handle, job) => {
       authorizedBy: `job ${job.type} (${job.id})`,
     });
     markJobSucceeded(db, job.id, { stageTextId: text.id, stageKey: "raw" }, version);
+  })();
+};
+
+// Stage 3.1: automatic transcription of audio sources via the hosted ASR
+// seam. Transcribes every audio/video source that still has no text, in one
+// async job, with word-level timestamps stored on each source. The ASR work
+// (slow, network) happens before a single commit transaction per source.
+const transcribeAudio: Executor = async (handle, job) => {
+  const { db, sqlite } = handle;
+  const pending = listSources(db, job.projectId).filter(
+    (s) =>
+      (s.mediaType === "audio" || s.mediaType === "video") &&
+      !!s.originalPath &&
+      s.content.trim() === "",
+  );
+  if (pending.length === 0) {
+    throw new JobInputError(
+      "No audio to transcribe — upload a recording whose transcript you don't " +
+        "already have, or paste the transcript in as a text source.",
+    );
+  }
+  markJobRunning(
+    db,
+    job.id,
+    {
+      sourceIds: pending.map((s) => s.id),
+      total: pending.length,
+      titles: pending.map((s) => s.title),
+    },
+    1,
+  );
+  const client = createTranscriptionClient();
+  const done: Array<{ id: string; title: string; words: number; model: string }> = [];
+  for (const source of pending) {
+    const audio = readOriginal(source.originalPath!);
+    const result = await client.transcribe({
+      audio,
+      mimeType: source.mimeType ?? "application/octet-stream",
+      filename: source.originalName ?? `${source.title}.audio`,
+      language: source.language,
+    });
+    const wordCount = countWords(result.text);
+    sqlite.transaction(() => {
+      saveTranscription(db, source.id, {
+        content: result.text,
+        wordCount,
+        language: result.language,
+        words: result.words,
+        model: result.model,
+        provider: "asr",
+        transcribedAt: now(),
+      });
+      appendChange(db, {
+        projectId: job.projectId,
+        what: `Transcribed recording "${source.title}" (${wordCount} words, ${result.words.length} word-level timestamps, model ${result.model})`,
+        where: "stage 1 · transcription",
+        why: "automatic speech recognition of an uploaded recording",
+        authorizedBy: `job ${job.type} (${job.id})`,
+      });
+    })();
+    done.push({
+      id: source.id,
+      title: source.title,
+      words: wordCount,
+      model: result.model,
+    });
+  }
+  sqlite.transaction(() => {
+    markJobSucceeded(
+      db,
+      job.id,
+      { transcribed: done, count: done.length },
+      1,
+    );
   })();
 };
 
@@ -246,6 +332,62 @@ function requireContract(db: DbHandle["db"], projectId: string) {
   return contract;
 }
 
+const PASS_A_MAX_TOKENS = 4000;
+
+/** Pass A correction-proposal instructions: ONLY transcription-software noise. */
+function passAInstructions(mode: string): string {
+  return (
+    "You correct transcription-software noise in an audio-book transcript. " +
+    "Find ONLY errors the transcription software made, and return them as corrections. " +
+    "You must NOT rephrase, improve, shorten, reorder or edit the author's words in any " +
+    `way — that is strictly forbidden by the editorial contract (${mode} mode). ` +
+    "Every correction MUST be exactly one of these classes:\n" +
+    '- ASR: a misheard word or phrase (e.g. "Tu shé" heard instead of "Touché")\n' +
+    "- NOM: a proper name the transcriber spelled wrong\n" +
+    "- REC: a systematic transcriber pattern (a recurring mis-transcription)\n" +
+    '- NORM: a number written as pronounced that should be digits (e.g. "twenty twenty five" -> "2025")\n\n' +
+    "Respond with ONLY a JSON array (no prose, no code fences). Each element is an object with string " +
+    'fields "type" (ASR|NOM|REC|NORM), "original" (the EXACT text as it appears in the transcript, copied ' +
+    'verbatim so it can be found and replaced), "correction" (the fixed text), "justification" (why this is a ' +
+    'transcription error and not an edit), and an optional number "position". Return [] if there are none.'
+  );
+}
+
+/**
+ * Ask the AI to propose structured transcription-noise corrections. When no
+ * AI key is configured the pass still runs: it skips the correction phase and
+ * falls back to the deterministic mechanical cleanup only.
+ */
+async function proposePassACorrections(
+  db: Db,
+  job: Job,
+  text: string,
+  mode: string,
+): Promise<{
+  proposal: ReturnType<typeof parseProposedCorrections> | null;
+  skipReason?: string;
+}> {
+  let client: AiClient;
+  try {
+    client = aiFactory(db);
+  } catch (e) {
+    if (e instanceof AiAuthError) return { proposal: null, skipReason: e.message };
+    throw e;
+  }
+  const response = await client.complete({
+    role: "fast",
+    // bare: the proposal must spot raw transcription noise, not be shaped by
+    // the project voice; the faithful rule is stated in the instructions and
+    // enforced structurally by the correction engine regardless.
+    system: { instructions: passAInstructions(mode), bare: true },
+    messages: [{ role: "user", content: text }],
+    maxTokens: PASS_A_MAX_TOKENS,
+    projectId: job.projectId,
+    jobId: job.id,
+  });
+  return { proposal: parseProposedCorrections(response.text) };
+}
+
 const cleanupPassA: Executor = async (handle, job) => {
   const { db, sqlite } = handle;
   const raw = latestText(db, job.projectId, "raw");
@@ -267,8 +409,49 @@ const cleanupPassA: Executor = async (handle, job) => {
     },
     raw.version,
   );
+
+  // --- Phase 1: AI proposes transcription-noise corrections ----------------
+  const { proposal, skipReason } = await proposePassACorrections(
+    db,
+    job,
+    raw.content,
+    contract.mode,
+  );
+
+  // --- Phase 2: apply with programmatic verification -----------------------
+  // Every proposal is checked against the faithful contract and the
+  // exactly-once rule; anything unverifiable goes to the doubtful queue, never
+  // silently into the text.
+  const correctionResult: ApplyResult = proposal
+    ? applyCorrections(raw.content, proposal.valid, contract.mode)
+    : { output: raw.content, applied: [], doubtful: [], rejected: [] };
+  const rejected = [
+    ...(proposal?.rejected ?? []),
+    ...correctionResult.rejected,
+  ];
+  const corrected = correctionResult.output;
+
+  // --- Phase 3: hard proof — corrected == raw + exactly the applied changes
+  const verdict = verifyDiffMatchesCorrections(
+    raw.content,
+    corrected,
+    correctionResult.applied,
+  );
+  if (!verdict.ok) {
+    throw new Error(
+      "Pass A aborted: the corrected text does not match the logged corrections " +
+        `(word-level diff mismatch). ${verdict.problems.join(" ")}`,
+    );
+  }
+
+  // --- Phase 4: deterministic mechanical cleanup (spacing, punctuation; and
+  // filler removal only where the contract allows rewrites) on top.
   await breathe();
-  const { output, changes, blocked } = cleanupTransform(raw.content, allowRewrites);
+  const { output, changes, blocked } = cleanupTransform(corrected, allowRewrites);
+
+  const label = (c: Correction) =>
+    `${CORRECTION_TYPE_LABELS[c.type]} (${c.type})`;
+
   sqlite.transaction(() => {
     const version = nextTextVersion(db, job.projectId, "passA");
     const text = insertText(db, {
@@ -278,6 +461,47 @@ const cleanupPassA: Executor = async (handle, job) => {
       content: output,
       jobId: job.id,
     });
+    // Applied noise corrections — one attributed, classified audit row each.
+    for (const c of correctionResult.applied) {
+      appendChange(db, {
+        projectId: job.projectId,
+        what: `Corrected "${c.original}" → "${c.correction}" [${label(c)}]`,
+        where: "stage 4 · passA · transcription noise",
+        why: c.justification || "transcription-software error corrected",
+        authorizedBy: `job ${job.type} (${job.id})`,
+        category: c.type,
+      });
+    }
+    // Unverifiable proposals → the doubtful queue (review_queue), plus a note.
+    for (const d of correctionResult.doubtful) {
+      addReviewItem(db, {
+        projectId: job.projectId,
+        itemType: "transcription",
+        excerpt: d.correction.original,
+        question:
+          `Transcription fix "${d.correction.original}" → "${d.correction.correction}" ` +
+          `[${label(d.correction)}] was not auto-applied: ${d.reason}`,
+      });
+      appendChange(db, {
+        projectId: job.projectId,
+        what: `Doubtful correction queued for review: "${d.correction.original}" → "${d.correction.correction}" [${label(d.correction)}]`,
+        where: "stage 4 · passA · doubtful queue",
+        why: d.reason,
+        authorizedBy: `job ${job.type} (${job.id})`,
+        category: d.correction.type,
+      });
+    }
+    // Rejected proposals — edits the faithful contract refused, on the record.
+    for (const r of rejected) {
+      appendChange(db, {
+        projectId: job.projectId,
+        what: `Rejected proposed edit "${r.correction.original}" → "${r.correction.correction}"`,
+        where: "stage 4 · passA · blocked by contract",
+        why: r.reason,
+        authorizedBy: `job ${job.type} (${job.id})`,
+      });
+    }
+    // Deterministic mechanical cleanup changes (and verbatim-blocked fillers).
     for (const c of changes) {
       appendChange(db, {
         projectId: job.projectId,
@@ -298,9 +522,14 @@ const cleanupPassA: Executor = async (handle, job) => {
     }
     appendChange(db, {
       projectId: job.projectId,
-      what: `Cleanup Pass A produced passA v${version} from raw v${raw.version} (${changes.length} change group(s), ${blocked.length} blocked by contract)`,
+      what:
+        `Cleanup Pass A produced passA v${version} from raw v${raw.version}: ` +
+        `${correctionResult.applied.length} noise correction(s) applied, ` +
+        `${correctionResult.doubtful.length} doubtful, ${rejected.length} rejected; ` +
+        `${changes.length} mechanical change group(s), ${blocked.length} blocked by contract` +
+        (skipReason ? " (AI correction skipped: no AI key configured)" : ""),
       where: "stage 4 · passA text",
-      why: "first cleanup pass over the transcription",
+      why: "transcription-noise correction pass over the raw transcript",
       authorizedBy: `job ${job.type} (${job.id})`,
     });
     markJobSucceeded(
@@ -309,9 +538,14 @@ const cleanupPassA: Executor = async (handle, job) => {
       {
         stageTextId: text.id,
         stageKey: "passA",
+        corrections: correctionResult.applied.length,
+        doubtful: correctionResult.doubtful.length,
+        rejected: rejected.length,
+        diffVerified: verdict.ok,
         changeGroups: changes.length,
         blockedByContract: blocked.length,
         contractVersion: contract.version,
+        aiCorrectionSkipped: skipReason ?? null,
       },
       version,
     );
@@ -1057,6 +1291,7 @@ function escapeHtml(s: string): string {
 
 export const EXECUTORS: Record<string, Executor> = {
   ingest_sources: ingestSources,
+  transcribe_audio: transcribeAudio,
   tone_samples: toneSamples,
   extract_style: extractStyle,
   style_sample: styleSample,

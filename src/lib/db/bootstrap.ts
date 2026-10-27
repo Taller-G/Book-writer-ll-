@@ -135,6 +135,10 @@ CREATE TABLE IF NOT EXISTS change_log (
   "where" TEXT NOT NULL,
   why TEXT NOT NULL,
   authorized_by TEXT NOT NULL,
+  -- Optional structured classification of the change (e.g. the Pass A
+  -- transcription-error taxonomy ASR/NOM/REC/NORM) so the change-log UI can
+  -- render a badge; NULL for general audit entries.
+  category TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_change_log_project ON change_log(project_id);
@@ -358,6 +362,9 @@ const ADDED_COLUMNS: Record<string, Array<[name: string, type: string]>> = {
   ],
   stage_texts: [["style_profile_version", "INTEGER"]],
   ai_usage: [["system_prompt", "TEXT NOT NULL DEFAULT ''"]],
+  // Structured classification for change-log entries (nullable: pre-existing
+  // and general audit rows carry none).
+  change_log: [["category", "TEXT"]],
   // Render metadata (layout-engine work order). All nullable: rows written by
   // the HTML export predate real PDF rendering and carry none of this.
   pdf_versions: [

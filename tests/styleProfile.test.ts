@@ -6,6 +6,7 @@ import { createAiClient } from "@/lib/ai";
 import { canCompleteStage } from "@/lib/gates";
 import { openDatabase, type DbHandle } from "@/lib/db/client";
 import { addStyleReference } from "@/lib/ingest/styleRef";
+import { setAiFactoryForTests } from "@/lib/jobs/executors";
 import { enqueueAndRun } from "@/lib/jobs/runner";
 import { listAiUsage } from "@/lib/repo/aiUsage";
 import { listChanges } from "@/lib/repo/changeLog";
@@ -19,6 +20,7 @@ import {
 } from "@/lib/repo/editorial";
 import { setApiKey } from "@/lib/repo/prefs";
 import { createProject } from "@/lib/repo/projects";
+import { FakeAiClient } from "./helpers/fakeAi";
 import { addSource } from "@/lib/repo/sources";
 import { listStyleRefs } from "@/lib/repo/styleRefs";
 import {
@@ -337,6 +339,12 @@ describe("sample passage with the draft profile", () => {
 });
 
 describe("mid-project profile change", () => {
+  // Pass A now asks the AI to propose transcription-noise corrections; these
+  // tests only care about the produced passA text, so stub a no-op proposal
+  // (no corrections) to keep them hermetic.
+  beforeEach(() => setAiFactoryForTests(() => new FakeAiClient(() => "[]")));
+  afterEach(() => setAiFactoryForTests());
+
   async function producePassA(): Promise<void> {
     await enqueueAndRun(handle, { projectId, stage: 1, type: "ingest_sources" });
     await enqueueAndRun(handle, { projectId, stage: 4, type: "cleanup_pass_a" });
