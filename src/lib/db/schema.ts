@@ -173,6 +173,12 @@ export const pdfVersions = sqliteTable("pdf_versions", {
   notes: text("notes").notNull().default(""),
   jobId: text("job_id"),
   createdAt: text("created_at").notNull(),
+  // Render metadata (Stage 6.1–6.2 layout engine); null on HTML export rows.
+  textVersion: integer("text_version"),
+  formatHash: text("format_hash"),
+  qaPassed: integer("qa_passed"),
+  qaReportPath: text("qa_report_path"),
+  // Preview / correction-cycle fields (Stage 6.3).
   // JSON array of per-page text from the deterministic paginator.
   pages: text("pages").notNull().default("[]"),
   pageCount: integer("page_count").notNull().default(0),

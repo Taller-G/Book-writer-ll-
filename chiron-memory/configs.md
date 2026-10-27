@@ -13,3 +13,7 @@ What: next.config.ts declares pdf-parse, mammoth and music-metadata in serverExt
 ## BOOK_WRITER_DATA_DIR controls where all state lives
 
 What: The SQLite file, the AES key file and exports live under data/ by default; the BOOK_WRITER_DATA_DIR env var overrides it (tests point it at a temp dir) · Why: keeps every bit of mutable state in one gitignored place and makes tests hermetic · Where: src/lib/db/client.ts (dataDir())
+
+## Rendering requires xelatex (memoir+fontspec) and poppler on the host
+
+What: The render pipeline shells out to xelatex (TeX Live with memoir, fontspec, microtype) and poppler CLI tools (pdftotext, pdffonts, pdfinfo, pdfimages); fc-list is used for font fallback resolution (configured font → Palatino → TeX Gyre Pagella → Times New Roman) · Why: spec §9 validated server-side XeLaTeX+memoir pipeline with poppler-based QA; no JS typesetting library matches print quality · Where: src/lib/render/compile.ts, src/lib/render/qa.ts, src/lib/render/fonts.ts

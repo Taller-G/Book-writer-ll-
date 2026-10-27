@@ -88,7 +88,9 @@ export const STAGES: StageDef[] = [
     description:
       "Decide the physical format — page size, typefaces, margins, folios and " +
       "book conventions. Every choice is explained and preloaded with proven " +
-      "defaults; accepting them untouched gives a professional result.",
+      "defaults; accepting them untouched gives a professional result. Then " +
+      "render a QA-checked PDF of the approved text.",
+    jobType: "render_pdf",
   },
   {
     num: 8,

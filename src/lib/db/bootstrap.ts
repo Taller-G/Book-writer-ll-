@@ -185,10 +185,16 @@ CREATE TABLE IF NOT EXISTS pdf_versions (
   notes TEXT NOT NULL DEFAULT '',
   job_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  -- Preview/correction-cycle fields. pages is a JSON array of per-page text
-  -- (the deterministic paginator's output), enabling the spread viewer, the
-  -- page-by-page visual diff and the page count. qa/diff hold the QA-suite
-  -- result and the diff against the previous version computed at build time.
+  -- Render metadata (Stage 6.1–6.2 layout engine); nullable because HTML-export
+  -- rows predate it.
+  text_version INTEGER,
+  format_hash TEXT,
+  qa_passed INTEGER,
+  qa_report_path TEXT,
+  -- Preview/correction-cycle fields (Stage 6.3). pages is a JSON array of
+  -- per-page text (the deterministic paginator's output), enabling the spread
+  -- viewer, the page-by-page visual diff and the page count. qa/diff hold the
+  -- QA-suite result and the diff against the previous version, built at compile.
   pages TEXT NOT NULL DEFAULT '[]',
   page_count INTEGER NOT NULL DEFAULT 0,
   source_text_version INTEGER,
@@ -391,10 +397,17 @@ const ADDED_COLUMNS: Record<string, Array<[name: string, type: string]>> = {
   ],
   stage_texts: [["style_profile_version", "INTEGER"]],
   ai_usage: [["system_prompt", "TEXT NOT NULL DEFAULT ''"]],
-  // Preview / correction-cycle fields added to the pre-existing pdf_versions
-  // table. CHECK constraints can't be added by ALTER TABLE, so `kind` is a
-  // plain TEXT column here (the repo only ever writes the three valid values).
+  // Columns added to the pre-existing pdf_versions table by two work orders.
+  // CHECK constraints can't be added by ALTER TABLE, so `kind` is a plain TEXT
+  // column here (the repo only ever writes the three valid values).
   pdf_versions: [
+    // Render metadata (Stage 6.1–6.2 layout engine). All nullable: HTML-export
+    // rows predate real PDF rendering and carry none of this.
+    ["text_version", "INTEGER"],
+    ["format_hash", "TEXT"],
+    ["qa_passed", "INTEGER"],
+    ["qa_report_path", "TEXT"],
+    // Preview / correction-cycle fields (Stage 6.3).
     ["pages", "TEXT NOT NULL DEFAULT '[]'"],
     ["page_count", "INTEGER NOT NULL DEFAULT 0"],
     ["source_text_version", "INTEGER"],

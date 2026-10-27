@@ -98,6 +98,12 @@ export function insertPdfVersion(
     filePath: string;
     notes?: string;
     jobId?: string;
+    // Render metadata (Stage 6.1–6.2 layout engine).
+    textVersion?: number;
+    formatHash?: string;
+    qaPassed?: number;
+    qaReportPath?: string;
+    // Preview / correction-cycle fields (Stage 6.3).
     /** JSON array of per-page text (the paginator's serialized output). */
     pages?: string;
     pageCount?: number;
@@ -119,6 +125,10 @@ export function insertPdfVersion(
       filePath: input.filePath,
       notes: input.notes ?? "",
       jobId: input.jobId,
+      textVersion: input.textVersion,
+      formatHash: input.formatHash,
+      qaPassed: input.qaPassed,
+      qaReportPath: input.qaReportPath,
       pages: input.pages ?? "[]",
       pageCount: input.pageCount ?? 0,
       sourceTextVersion: input.sourceTextVersion,

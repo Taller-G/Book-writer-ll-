@@ -42,6 +42,7 @@ import { addReviewItem, countPendingReviews } from "../repo/review";
 import { listSources } from "../repo/sources";
 import { listStyleRefs } from "../repo/styleRefs";
 import { insertText, latestText, nextTextVersion } from "../repo/texts";
+import { renderBook } from "../render/render";
 
 // Baseline deterministic executors — the versioned input/output contract
 // other work orders replace with Claude-powered implementations. An executor
@@ -446,6 +447,78 @@ const finalizeText: Executor = async (handle, job) => {
       authorizedBy: `job ${job.type} (${job.id})`,
     });
     markJobSucceeded(db, job.id, { stageTextId: text.id, stageKey: "final" }, version);
+  })();
+};
+
+// Stage 7 layout engine: approved FINAL text + format_config → versioned,
+// QA-checked PDF. The composition is verified word-for-word against the
+// approved text before compiling; a mismatch aborts the render. The QA report
+// is always written — a failing report versions the PDF as qa_passed = 0 so
+// the defects can be inspected, page by page.
+const renderPdf: Executor = async (handle, job) => {
+  const { db, sqlite } = handle;
+  const finalText = latestText(db, job.projectId, "final");
+  if (!finalText) {
+    throw new JobInputError(
+      "There is no FINAL text to render. Finalize the text in Review first.",
+    );
+  }
+  const project = getProject(db, job.projectId);
+  if (!project) throw new JobInputError("Project not found.");
+  const format = getFormatConfig(db, job.projectId);
+  markJobRunning(
+    db,
+    job.id,
+    { stageKey: "final", version: finalText.version, trimSize: format.trimSize },
+    finalText.version,
+  );
+  const version = nextPdfVersion(db, job.projectId);
+  const outDir = path.join(dataDir(), "exports", job.projectId);
+  const result = await renderBook({
+    approvedText: finalText.content,
+    format,
+    meta: { title: project.title, author: project.author },
+    buildDir: path.join(outDir, "build"),
+    outDir,
+    pdfVersion: version,
+    textVersion: finalText.version,
+  });
+  sqlite.transaction(() => {
+    const pdf = insertPdfVersion(db, {
+      projectId: job.projectId,
+      version,
+      filePath: result.pdfPath,
+      notes: `Rendered from FINAL v${finalText.version}, trim ${format.trimSize}, font ${result.fontUsed}`,
+      jobId: job.id,
+      textVersion: finalText.version,
+      formatHash: result.formatHash,
+      qaPassed: result.qaReport.passed ? 1 : 0,
+      qaReportPath: result.qaFiles.markdownPath,
+    });
+    const failing = result.qaReport.checks.filter((c) => !c.passed);
+    appendChange(db, {
+      projectId: job.projectId,
+      what:
+        `PDF v${version} rendered (${path.basename(result.pdfPath)}); QA ` +
+        (result.qaReport.passed
+          ? "passed all checks"
+          : `failed: ${failing.map((c) => c.id).join(", ")}`),
+      where: "stage 7 · pdf renders",
+      why: "layout render of the approved text requested",
+      authorizedBy: `job ${job.type} (${job.id})`,
+    });
+    markJobSucceeded(
+      db,
+      job.id,
+      {
+        pdfVersionId: pdf.id,
+        filePath: result.pdfPath,
+        qaPassed: result.qaReport.passed,
+        qaReportPath: result.qaFiles.markdownPath,
+        recoveredFromCorruption: result.recoveredFromCorruption,
+      },
+      version,
+    );
   })();
 };
 
@@ -1017,5 +1090,6 @@ export const EXECUTORS: Record<string, Executor> = {
   generate_master_text: generateMasterTextExec,
   propose_apparatus: proposeApparatusExec,
   finalize_text: finalizeText,
+  render_pdf: renderPdf,
   export_book: exportBook,
 };

@@ -46,6 +46,13 @@ What: Stage-1 file uploads POST multipart FormData to /api/projects/[id]/sources
 
 What: Video uploads always store the original with checksum and duration; the audio track is extracted to derived/audio.m4a only when system ffmpeg exists, otherwise the source carries a visible note explaining it · Why: ffmpeg is a system dependency that may be absent — blocking the upload would lose the user's material, and the derived extraction can be redone later · Where: src/lib/ingest/ingest.ts (extractVideoAudio)
 
+## PDF rendering is a stage-7 render_pdf job; stage-8 HTML export unchanged
+
+What: Real PDF rendering landed as a NEW job type render_pdf on stage 7 (Format), writing pdf_versions rows with render metadata (text_version, format_hash, qa_passed, qa_report_path); the stage-8 export_book HTML executor was left untouched · Why: the work-order seam is "preview cycle + print output consume versioned PDFs + QA report", which is the Format stage; replacing export_book would have been a cross-cutting slug migration out of scope · Where: src/lib/stages.ts, src/lib/jobs/executors.ts, src/lib/db/bootstrap.ts
+
+## Composition fidelity is verified by inverse-parsing the emitted LaTeX
+
+What: verifyComposition() re-extracts the word stream from the generated .tex (inverse of the composer's own grammar, LaTeX escapes inverted) and compares it word-by-word against the approved text, aborting with the 1-based word position and both contexts · Why: comparing approved text to a decompiled artifact catches any injected/dropped/altered word instead of trusting the composer; PDF-side text is unusable for this because extraction introduces ligatures (ﬁ) and layout noise · Where: src/lib/render/compose.ts · Learned: verify fidelity at the composition seam, not the rendered-PDF seam
 ## Stage 7 seeds the §7 proven format defaults on first read
 
 What: getFormatConfig seeds a missing format_configs row with PROVEN_DEFAULTS (A5, EB Garamond 11/14.5 pt OldStyle, Inter headings/folios 9 pt small caps, margins inner 2.3 / outer 1.9 / top 1.6 / bottom 2.4 cm, first-line indents, recto chapter openings, 2.4 em whitespace separators), so a user who touches nothing in the Format stage still ends with the proven configuration saved · Why: the spec requires that accepting every default untouched yields exactly the §7 configuration, verifiable in the stored format_config — seeding at first read covers even users who never press Save · Where: src/lib/format/config.ts (PROVEN_DEFAULTS), src/lib/repo/output.ts (getFormatConfig), tests/format.test.ts
