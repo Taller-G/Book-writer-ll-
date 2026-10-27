@@ -162,9 +162,50 @@ CREATE TABLE IF NOT EXISTS review_queue (
     CHECK (status IN ('pending','accepted','rejected')),
   resolution_note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  resolved_at TEXT
+  resolved_at TEXT,
+  -- Pass C classifies inconsistencies by severity; reaction/question items
+  -- carry the audio clip for confirmation; batch_id groups a Pass C run into
+  -- one approvable batch. All nullable: pre-existing items have none.
+  severity TEXT,
+  clip_path TEXT,
+  batch_id TEXT,
+  ref_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_review_queue_project ON review_queue(project_id);
+
+-- Audience reactions (spec §4 stage 3.4). Acoustic detection (server-side DSP,
+-- no AI) proposes candidates; confirmed reactions are inserted into Pass B as
+-- *[Laughter]* / *[Applause]*. Manual marks (quiet rooms) land here too.
+CREATE TABLE IF NOT EXISTS reactions (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_id TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('laughter','applause')),
+  start_ms INTEGER NOT NULL DEFAULT 0,
+  end_ms INTEGER NOT NULL DEFAULT 0,
+  clip_path TEXT,
+  acoustic TEXT NOT NULL DEFAULT '{}',
+  semantic TEXT NOT NULL DEFAULT '',
+  origin TEXT NOT NULL DEFAULT 'acoustic' CHECK (origin IN ('acoustic','manual')),
+  status TEXT NOT NULL DEFAULT 'candidate'
+    CHECK (status IN ('candidate','confirmed','rejected')),
+  char_anchor INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  confirmed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_reactions_project ON reactions(project_id);
+
+-- The FINAL lock (spec §4 stage 3.6), the editorial-contract-level state that
+-- closes the text. A locked project refuses any text-producing pass; reopening
+-- requires an explicit user unlock, and every post-closure touch-up is logged.
+CREATE TABLE IF NOT EXISTS editorial_locks (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  locked INTEGER NOT NULL DEFAULT 0,
+  locked_version INTEGER,
+  locked_at TEXT,
+  unlocked_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 CREATE TABLE IF NOT EXISTS format_configs (
   project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
@@ -358,6 +399,14 @@ const ADDED_COLUMNS: Record<string, Array<[name: string, type: string]>> = {
   ],
   stage_texts: [["style_profile_version", "INTEGER"]],
   ai_usage: [["system_prompt", "TEXT NOT NULL DEFAULT ''"]],
+  // Audience reactions, Pass C severity and the review-queue clip reference
+  // (stage 3.4-3.6 work order). All nullable: pre-existing items have none.
+  review_queue: [
+    ["severity", "TEXT"],
+    ["clip_path", "TEXT"],
+    ["batch_id", "TEXT"],
+    ["ref_id", "TEXT"],
+  ],
   // Render metadata (layout-engine work order). All nullable: rows written by
   // the HTML export predate real PDF rendering and carry none of this.
   pdf_versions: [

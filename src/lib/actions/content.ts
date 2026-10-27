@@ -12,8 +12,17 @@ import {
   saveContract,
 } from "../repo/editorial";
 import { addCover, saveFormatConfig, selectCover, setChecklistDone } from "../repo/output";
+import { assertUnlocked, unlockText } from "../repo/locks";
 import { touchProject } from "../repo/projects";
-import { resolveReviewItem } from "../repo/review";
+import {
+  addReaction,
+  getReaction,
+  setReactionStatus,
+} from "../repo/reactions";
+import { getReviewItem, resolveBatch, resolveReviewItem } from "../repo/review";
+import { msToCharOffset } from "../reactions/detect";
+import { decodeWav, sliceClipWav } from "../reactions/wav";
+import { readOriginal, writeDerived } from "../files/store";
 import { removeStyleRef } from "../repo/styleRefs";
 import {
   addSource,
@@ -210,6 +219,122 @@ export async function resolveReviewAction(formData: FormData): Promise<void> {
   if (!itemId || (status !== "accepted" && status !== "rejected")) return;
   const db = getDb();
   resolveReviewItem(db, itemId, status, String(formData.get("note") ?? ""));
+  touchProject(db, projectId);
+  revalidatePath(stagePath(projectId, 6));
+}
+
+/** Confirm or reject a detected reaction candidate; resolves its review item. */
+export async function resolveReactionAction(formData: FormData): Promise<void> {
+  const projectId = String(formData.get("projectId") ?? "");
+  const reactionId = String(formData.get("reactionId") ?? "");
+  const itemId = String(formData.get("itemId") ?? "");
+  const decision = String(formData.get("decision") ?? "") as "confirm" | "reject";
+  if (!reactionId || (decision !== "confirm" && decision !== "reject")) return;
+  const db = getDb();
+  assertUnlocked(db, projectId);
+  const reaction = getReaction(db, reactionId);
+  if (!reaction) return;
+  setReactionStatus(db, reactionId, decision === "confirm" ? "confirmed" : "rejected");
+  if (itemId && getReviewItem(db, itemId)) {
+    resolveReviewItem(
+      db,
+      itemId,
+      decision === "confirm" ? "accepted" : "rejected",
+      decision === "confirm"
+        ? `confirmed ${reaction.kind} reaction for insertion`
+        : `rejected ${reaction.kind} reaction (false positive)`,
+    );
+  }
+  touchProject(db, projectId);
+  revalidatePath(stagePath(projectId, 5));
+}
+
+/**
+ * Manual reaction marking for rooms where acoustic detection finds nothing
+ * (the quiet-room path). Creates a CONFIRMED reaction directly. When an audio
+ * source and a timestamp are given, a clip is cut; otherwise it is a pure
+ * text-anchored mark.
+ */
+export async function markReactionAction(formData: FormData): Promise<void> {
+  const projectId = String(formData.get("projectId") ?? "");
+  const kind = String(formData.get("kind") ?? "") as "laughter" | "applause";
+  if (!projectId || (kind !== "laughter" && kind !== "applause")) return;
+  const db = getDb();
+  assertUnlocked(db, projectId);
+  const sourceId = String(formData.get("sourceId") ?? "") || null;
+  const atMs = Number(formData.get("atMs") ?? "");
+  const hasMs = Number.isFinite(atMs) && atMs >= 0;
+  let charAnchor: number | null = null;
+  const rawAnchor = Number(formData.get("charAnchor") ?? "");
+  if (Number.isFinite(rawAnchor) && rawAnchor >= 0) charAnchor = Math.round(rawAnchor);
+
+  let clipPath: string | null = null;
+  let startMs = hasMs ? Math.round(atMs) : 0;
+  let endMs = hasMs ? Math.round(atMs) + 1500 : 0;
+  const source = sourceId ? getSource(db, sourceId) : undefined;
+  if (source?.originalPath && hasMs) {
+    try {
+      const audio = decodeWav(readOriginal(source.originalPath));
+      const totalMs = (source.durationSeconds ?? audio.frameCount / audio.sampleRate) * 1000;
+      endMs = Math.min(totalMs, startMs + 1500);
+      if (charAnchor === null && source.content) {
+        charAnchor = msToCharOffset(startMs, totalMs, source.content.length);
+      }
+      clipPath = writeDerived(
+        projectId,
+        sourceId!,
+        `reaction-manual-${startMs}-${kind}.wav`,
+        sliceClipWav(audio, startMs, endMs),
+      );
+    } catch {
+      // Non-WAV or unreadable — keep it as a text-only manual mark.
+      startMs = hasMs ? Math.round(atMs) : 0;
+      endMs = startMs;
+    }
+  }
+
+  addReaction(db, {
+    projectId,
+    sourceId,
+    kind,
+    startMs,
+    endMs,
+    clipPath,
+    acoustic: {},
+    semantic: "manually marked by user",
+    origin: "manual",
+    status: "confirmed",
+    charAnchor,
+  });
+  appendChange(db, {
+    projectId,
+    what: `Manually marked a ${kind} reaction${hasMs ? ` at ${startMs} ms` : ""}`,
+    where: "stage 5 · reactions",
+    why: "acoustic detection found nothing in this room — user marked it by hand",
+    authorizedBy: "user",
+  });
+  touchProject(db, projectId);
+  revalidatePath(stagePath(projectId, 5));
+}
+
+/** Accept or reject a whole Pass C batch of inconsistencies in one step. */
+export async function resolveBatchAction(formData: FormData): Promise<void> {
+  const projectId = String(formData.get("projectId") ?? "");
+  const batchId = String(formData.get("batchId") ?? "");
+  const status = String(formData.get("status") ?? "") as "accepted" | "rejected";
+  if (!projectId || !batchId || (status !== "accepted" && status !== "rejected")) return;
+  const db = getDb();
+  resolveBatch(db, projectId, batchId, status);
+  touchProject(db, projectId);
+  revalidatePath(stagePath(projectId, 6));
+}
+
+/** Explicitly reopen a FINAL (locked) text for editing; the reason is logged. */
+export async function unlockTextAction(formData: FormData): Promise<void> {
+  const projectId = String(formData.get("projectId") ?? "");
+  if (!projectId) return;
+  const db = getDb();
+  unlockText(db, projectId, String(formData.get("reason") ?? ""));
   touchProject(db, projectId);
   revalidatePath(stagePath(projectId, 6));
 }

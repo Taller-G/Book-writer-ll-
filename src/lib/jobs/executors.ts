@@ -4,6 +4,14 @@ import { createAiClient, type AiClient } from "../ai";
 import { destinationOption, TONES } from "../contract/definitions";
 import { dataDir, type Db, type DbHandle } from "../db/client";
 import type { EditorialContract, Job, StyleProfile } from "../db/schema";
+import { readOriginal, writeDerived } from "../files/store";
+import {
+  applyPassB,
+  extractWords,
+  sameWordSequence,
+  type PassBReaction,
+} from "../format/passB";
+import { classifyInconsistencies } from "../format/passC";
 import { proposeApparatus } from "../master/apparatus";
 import {
   assembleMasterText,
@@ -29,12 +37,21 @@ import { markJobRunning, markJobSucceeded } from "../repo/jobs";
 import { ensureRules } from "../repo/normalization";
 import { getFormatConfig, insertPdfVersion, nextPdfVersion } from "../repo/output";
 import { getOutline, parseOutlineData, saveProposedOutline } from "../repo/outline";
+import { assertUnlocked, isLocked, lockText } from "../repo/locks";
 import { getProject } from "../repo/projects";
+import { addReaction, confirmedReactions } from "../repo/reactions";
 import { addReviewItem, countPendingReviews } from "../repo/review";
-import { listSources } from "../repo/sources";
+import { getSource, listSources } from "../repo/sources";
+import {
+  aiSemanticChecker,
+  findReactionCandidates,
+  type ReactionCandidate,
+} from "../reactions/detect";
+import { decodeWav, sliceClipWav, type DecodedAudio } from "../reactions/wav";
 import { listStyleRefs } from "../repo/styleRefs";
 import { insertText, latestText, nextTextVersion } from "../repo/texts";
 import { renderBook } from "../render/render";
+import { newId } from "../util";
 
 // Baseline deterministic executors — the versioned input/output contract
 // other work orders replace with Claude-powered implementations. An executor
@@ -318,6 +335,34 @@ const cleanupPassA: Executor = async (handle, job) => {
   })();
 };
 
+/** Decode the first WAV-decodable audio source of a project (for clips). */
+function projectAudioForClips(
+  db: Db,
+  projectId: string,
+): { sourceId: string; audio: DecodedAudio; durationMs: number } | undefined {
+  for (const src of listSources(db, projectId)) {
+    const isAudio =
+      src.mediaType === "audio" || src.mediaType === "video" || src.kind === "audio";
+    if (!isAudio || !src.originalPath) continue;
+    try {
+      const audio = decodeWav(readOriginal(src.originalPath));
+      const durationMs =
+        (src.durationSeconds ?? audio.frameCount / audio.sampleRate) * 1000;
+      return { sourceId: src.id, audio, durationMs };
+    } catch {
+      // not WAV-decodable — try the next source
+    }
+  }
+  return undefined;
+}
+
+// Pass B (spec §4 stage 3.5): faithful structuring. Inserts paragraph breaks at
+// discourse anchors and applies genre conventions — confirmed reactions in
+// italic brackets, interviewer questions in bold with an em dash on their own
+// paragraph — WITHOUT changing a single spoken word. Ambiguous questions
+// (speaker-rhetorical vs interviewer) are routed to the review queue with their
+// audio clip rather than silently formatted. Runs identically for verbatim and
+// hybrid contracts: it never rewrites.
 const refinePassB: Executor = async (handle, job) => {
   const { db, sqlite } = handle;
   const passA = latestText(db, job.projectId, "passA");
@@ -326,10 +371,8 @@ const refinePassB: Executor = async (handle, job) => {
       "There is no Pass A text to refine. Run Cleanup Pass A first.",
     );
   }
+  assertUnlocked(db, job.projectId);
   const contract = requireContract(db, job.projectId);
-  // Pass B is a rewrite pass: under a verbatim contract it must not touch
-  // the text — it passes it through unchanged and says so on the record.
-  const allowRewrites = contract.mode !== "verbatim";
   markJobRunning(
     db,
     job.id,
@@ -342,40 +385,73 @@ const refinePassB: Executor = async (handle, job) => {
     passA.version,
   );
   await breathe();
-  const paragraphs = passA.content
-    .split(/\n\n+/)
-    .map((p) => p.trim())
-    .filter(Boolean);
-  const longOnes = allowRewrites
-    ? paragraphs
-        .map((p, i) => ({ p, i }))
-        .filter(({ p }) => p.split(/\s+/).length > 120)
-    : [];
-  const output = allowRewrites ? paragraphs.join("\n\n") : passA.content;
+
+  const reactions: PassBReaction[] = confirmedReactions(db, job.projectId)
+    .filter((r) => r.charAnchor !== null)
+    .map((r) => ({ kind: r.kind, charAnchor: r.charAnchor as number }));
+  const result = applyPassB(passA.content, { reactions });
+
+  // The contract made structural: Pass B may only add breaks and formatting
+  // marks. If a single spoken word moved, abort rather than write drift.
+  if (!sameWordSequence(passA.content, result.output)) {
+    throw new Error(
+      "Pass B altered the spoken-word sequence — aborting to protect the " +
+        "faithful text. This is a bug in the structuring pass.",
+    );
+  }
+
+  // Ambiguous questions get their audio clip (when a WAV recording is linked)
+  // so the reviewer can hear who asked.
+  const clipSource = result.ambiguousQuestions.length
+    ? projectAudioForClips(db, job.projectId)
+    : undefined;
+
   sqlite.transaction(() => {
     const version = nextTextVersion(db, job.projectId, "passB");
     const text = insertText(db, {
       projectId: job.projectId,
       stageKey: "passB",
       version,
-      content: output,
+      content: result.output,
       jobId: job.id,
     });
-    for (const { p, i } of longOnes) {
+    for (const q of result.ambiguousQuestions) {
+      let clipPath: string | null = null;
+      if (clipSource) {
+        // Map the question's text offset proportionally back to audio time.
+        const ms =
+          passA.content.length > 0
+            ? (q.charOffset / passA.content.length) * clipSource.durationMs
+            : 0;
+        clipPath = writeDerived(
+          job.projectId,
+          clipSource.sourceId,
+          `question-${q.charOffset}.wav`,
+          sliceClipWav(clipSource.audio, ms, ms + 3000),
+        );
+      }
       addReviewItem(db, {
         projectId: job.projectId,
-        itemType: "structure",
-        excerpt: p.slice(0, 120) + "…",
-        question: `Paragraph ${i + 1} runs ${p.split(/\s+/).length} words — split it?`,
+        itemType: "question",
+        excerpt: q.excerpt,
+        question:
+          "Is this an interviewer's question or the speaker's own rhetorical " +
+          "question? It was left unformatted pending your decision.",
+        clipPath,
       });
     }
     appendChange(db, {
       projectId: job.projectId,
-      what: allowRewrites
-        ? `Refine Pass B produced passB v${version} from passA v${passA.version}; flagged ${longOnes.length} item(s) for review`
-        : `Refine Pass B passed passA v${passA.version} through unchanged as passB v${version} — verbatim contract blocks rewrites`,
+      what:
+        `Refine Pass B produced passB v${version} from passA v${passA.version}: ` +
+        `${result.paragraphBreaksAdded} paragraph break(s), ` +
+        `${result.reactionsInserted} reaction(s), ` +
+        `${result.interviewerQuestions} interviewer question(s); ` +
+        `${result.ambiguousQuestions.length} ambiguous question(s) flagged`,
       where: "stage 5 · passB text",
-      why: `structure and flow pass within editorial contract v${contract.version} (${contract.mode})`,
+      why:
+        `faithful structuring within editorial contract v${contract.version} ` +
+        `(${contract.mode}) — no word changed`,
       authorizedBy: `job ${job.type} (${job.id})`,
     });
     markJobSucceeded(
@@ -384,8 +460,10 @@ const refinePassB: Executor = async (handle, job) => {
       {
         stageTextId: text.id,
         stageKey: "passB",
-        flagged: longOnes.length,
-        rewritesBlocked: !allowRewrites,
+        paragraphBreaksAdded: result.paragraphBreaksAdded,
+        reactionsInserted: result.reactionsInserted,
+        interviewerQuestions: result.interviewerQuestions,
+        ambiguousFlagged: result.ambiguousQuestions.length,
         contractVersion: contract.version,
       },
       version,
@@ -393,11 +471,83 @@ const refinePassB: Executor = async (handle, job) => {
   })();
 };
 
+// Pass C (spec §4 stage 3.6): classify gross inconsistencies by severity and
+// emit them as one approvable review batch. Flags only — never edits the text.
+const classifyInconsistenciesExec: Executor = async (handle, job) => {
+  const { db, sqlite } = handle;
+  const passB = latestText(db, job.projectId, "passB");
+  if (!passB) {
+    throw new JobInputError(
+      "There is no Pass B text to check. Run Refine Pass B first.",
+    );
+  }
+  assertUnlocked(db, job.projectId);
+  const contract = requireContract(db, job.projectId);
+  const styleProfile = getConfirmedStyleProfile(db, job.projectId);
+  markJobRunning(db, job.id, { stageKey: "passB", version: passB.version }, passB.version);
+
+  const { items, aiCalls } = await classifyInconsistencies(aiFactory(db), {
+    projectId: job.projectId,
+    jobId: job.id,
+    text: passB.content,
+    contract,
+    styleProfile,
+  });
+  const batchId = newId();
+  const bySeverity = {
+    gross: items.filter((i) => i.severity === "gross").length,
+    medium: items.filter((i) => i.severity === "medium").length,
+    minor: items.filter((i) => i.severity === "minor").length,
+  };
+
+  sqlite.transaction(() => {
+    for (const item of items) {
+      addReviewItem(db, {
+        projectId: job.projectId,
+        itemType: "inconsistency",
+        severity: item.severity,
+        batchId,
+        excerpt: item.excerpt.slice(0, 160),
+        question: item.description,
+      });
+    }
+    appendChange(db, {
+      projectId: job.projectId,
+      what:
+        `Pass C flagged ${items.length} inconsistency item(s) ` +
+        `(${bySeverity.gross} gross, ${bySeverity.medium} medium, ${bySeverity.minor} minor)`,
+      where: "stage 6 · review queue",
+      why: "gross-inconsistency classification over the structured text (no word changed)",
+      authorizedBy: `job ${job.type} (${job.id})`,
+    });
+    markJobSucceeded(
+      db,
+      job.id,
+      { batchId, flagged: items.length, bySeverity, aiCalls },
+      passB.version,
+    );
+  })();
+};
+
+// Finalize (spec §4 stage 3.6): the stage-closing verification and the FINAL
+// lock. It refuses to close unless (1) the review queue is empty, (2) the
+// «»-quote balance is perfect, and (3) the word sequence of the final text
+// equals the approved Pass B text plus the recorded apparatus — a word-for-word
+// guard against drift between approval and closure. On success the text is
+// locked; re-finalizing or any edit then requires an explicit unlock, which is
+// logged, as is every post-closure touch-up.
 const finalizeText: Executor = async (handle, job) => {
   const { db, sqlite } = handle;
   const passB = latestText(db, job.projectId, "passB");
   if (!passB) {
     throw new JobInputError("There is no Pass B text. Run Refine Pass B first.");
+  }
+  // A locked FINAL must be explicitly reopened before it can be re-finalized.
+  if (isLocked(db, job.projectId)) {
+    throw new JobInputError(
+      "The text is FINAL and locked. Unlock it explicitly in Review before " +
+        "re-finalizing — the reopening is logged.",
+    );
   }
   const pending = countPendingReviews(db, job.projectId);
   if (pending > 0) {
@@ -418,6 +568,33 @@ const finalizeText: Executor = async (handle, job) => {
     passB.content,
     ...back.map(sectionBlock),
   ].join("\n\n");
+
+  // (2) Perfect «» quote balance over the whole closed text.
+  const balance = checkQuoteBalance(content);
+  if (!balance.ok) {
+    throw new JobInputError(
+      "The text cannot close with unbalanced quotes: " + balance.problems.join(" "),
+    );
+  }
+
+  // (3) Word-for-word: the final text's words must be exactly the approved
+  // apparatus words plus the approved Pass B words, in order.
+  const expectedWords = [
+    ...front.map(sectionBlock).flatMap(extractWords),
+    ...extractWords(passB.content),
+    ...back.map(sectionBlock).flatMap(extractWords),
+  ];
+  const finalWords = extractWords(content);
+  const wordsMatch =
+    expectedWords.length === finalWords.length &&
+    expectedWords.every((w, i) => w === finalWords[i]);
+  if (!wordsMatch) {
+    throw new Error(
+      "Stage-closing verification failed: the final word sequence does not " +
+        "equal the approved text plus recorded changes. Nothing was frozen.",
+    );
+  }
+
   sqlite.transaction(() => {
     const version = nextTextVersion(db, job.projectId, "final");
     const text = insertText(db, {
@@ -427,18 +604,27 @@ const finalizeText: Executor = async (handle, job) => {
       content,
       jobId: job.id,
     });
+    // Close and lock: the text is FINAL.
+    lockText(db, job.projectId, version);
     appendChange(db, {
       projectId: job.projectId,
       what:
-        `FINAL text v${version} frozen from passB v${passB.version}` +
+        `FINAL text v${version} frozen and LOCKED from passB v${passB.version}` +
         (front.length + back.length > 0
           ? ` with ${front.length + back.length} accepted apparatus section(s)`
           : ""),
       where: "stage 6 · final text",
-      why: "review queue fully resolved; text approved",
+      why:
+        "stage-closing verification passed: queue empty, quotes balanced, word " +
+        "sequence equals approved text plus recorded changes",
       authorizedBy: `job ${job.type} (${job.id})`,
     });
-    markJobSucceeded(db, job.id, { stageTextId: text.id, stageKey: "final" }, version);
+    markJobSucceeded(
+      db,
+      job.id,
+      { stageTextId: text.id, stageKey: "final", locked: true, words: finalWords.length },
+      version,
+    );
   })();
 };
 
@@ -1048,6 +1234,151 @@ const proposeApparatusExec: Executor = async (handle, job) => {
   })();
 };
 
+// --- Stage 5: acoustic audience-reaction detection (spec §4 stage 3.4) -------
+// DSP finds candidate reactions (no AI); the semantic check (AI, swappable)
+// confirms the preceding sentence is funny/forceful. Only double-evidence
+// candidates become review items, each carrying its audio clip. A quiet room
+// produces an empty, zero-candidate success — never a false positive.
+
+export function reactionLabel(kind: "laughter" | "applause"): string {
+  return kind === "laughter" ? "Laughter" : "Applause";
+}
+
+/** The transcript a source's reactions are aligned against. */
+function transcriptForSource(
+  db: Db,
+  projectId: string,
+  src: ReturnType<typeof listSources>[number],
+): string {
+  const linked = src.linkedSourceId ? getSource(db, src.linkedSourceId) : undefined;
+  return (
+    linked?.content ||
+    latestText(db, projectId, "passA")?.content ||
+    src.content ||
+    ""
+  );
+}
+
+const detectReactions: Executor = async (handle, job) => {
+  const { db, sqlite } = handle;
+  const contract = requireContract(db, job.projectId);
+  const audioSources = listSources(db, job.projectId).filter(
+    (s) =>
+      (s.mediaType === "audio" || s.mediaType === "video" || s.kind === "audio") &&
+      !!s.originalPath,
+  );
+  if (audioSources.length === 0) {
+    throw new JobInputError(
+      "No audio recording to analyze. Add an audio source, or mark reactions " +
+        "by hand on the player (manual marking).",
+    );
+  }
+  markJobRunning(db, job.id, { sources: audioSources.map((s) => s.id) }, 1);
+
+  const client = aiFactory(db);
+  const styleProfile = getConfirmedStyleProfile(db, job.projectId);
+  const semanticCheck = aiSemanticChecker(client, {
+    projectId: job.projectId,
+    jobId: job.id,
+    contract,
+    styleProfile,
+  });
+
+  // All slow work (decode, DSP, semantic calls, clip extraction) happens before
+  // the single write transaction.
+  const pending: Array<{
+    sourceId: string;
+    candidate: ReactionCandidate;
+    clipPath: string;
+  }> = [];
+  let analyzed = 0;
+  let skipped = 0;
+  for (const src of audioSources) {
+    let audio: DecodedAudio;
+    try {
+      audio = decodeWav(readOriginal(src.originalPath!));
+    } catch {
+      // Not decodable without ffmpeg (mp3/m4a): skip gracefully, like ingest.
+      skipped++;
+      continue;
+    }
+    analyzed++;
+    const transcript = transcriptForSource(db, job.projectId, src);
+    const candidates = await findReactionCandidates({
+      audio,
+      transcript,
+      durationSeconds: src.durationSeconds ?? undefined,
+      semanticCheck,
+    });
+    for (const candidate of candidates) {
+      if (!candidate.hasDoubleEvidence) continue;
+      const clipPath = writeDerived(
+        job.projectId,
+        src.id,
+        `reaction-${candidate.detected.startMs}-${candidate.detected.kind}.wav`,
+        sliceClipWav(audio, candidate.detected.startMs, candidate.detected.endMs),
+      );
+      pending.push({ sourceId: src.id, candidate, clipPath });
+    }
+  }
+
+  sqlite.transaction(() => {
+    for (const { sourceId, candidate, clipPath } of pending) {
+      const d = candidate.detected;
+      const reaction = addReaction(db, {
+        projectId: job.projectId,
+        sourceId,
+        kind: d.kind,
+        startMs: d.startMs,
+        endMs: d.endMs,
+        clipPath,
+        acoustic: {
+          rms: d.rms,
+          zcr: d.zcr,
+          modulation: d.modulation,
+          frameCount: d.frameCount,
+        },
+        semantic: candidate.semantic.note,
+        origin: "acoustic",
+        status: "candidate",
+        charAnchor: candidate.charAnchor,
+      });
+      addReviewItem(db, {
+        projectId: job.projectId,
+        itemType: "reaction",
+        excerpt: candidate.precedingSentence.slice(0, 160),
+        question:
+          `Audience ${d.kind} detected after this line (acoustic + semantic ` +
+          `evidence) — confirm to insert *[${reactionLabel(d.kind)}]*?`,
+        clipPath,
+        refId: reaction.id,
+      });
+      appendChange(db, {
+        projectId: job.projectId,
+        what: `Candidate ${d.kind} reaction detected at ${d.startMs}–${d.endMs} ms`,
+        where: "stage 5 · reactions",
+        why: "double evidence: acoustic DSP + semantic check of the preceding line",
+        authorizedBy: `job ${job.type} (${job.id})`,
+      });
+    }
+    appendChange(db, {
+      projectId: job.projectId,
+      what:
+        `Reaction detection: ${pending.length} candidate(s) from ${analyzed} ` +
+        `recording(s)${skipped > 0 ? `, ${skipped} skipped (not WAV-decodable)` : ""}`,
+      where: "stage 5 · reactions",
+      why: "acoustic audience-reaction pass over the linked recordings",
+      authorizedBy: `job ${job.type} (${job.id})`,
+    });
+    markJobSucceeded(
+      db,
+      job.id,
+      { analyzed, skipped, candidates: pending.length },
+      1,
+    );
+  })();
+};
+
 function escapeHtml(s: string): string {
   return s
     .replaceAll("&", "&amp;")
@@ -1061,7 +1392,9 @@ export const EXECUTORS: Record<string, Executor> = {
   extract_style: extractStyle,
   style_sample: styleSample,
   cleanup_pass_a: cleanupPassA,
+  detect_reactions: detectReactions,
   refine_pass_b: refinePassB,
+  classify_inconsistencies: classifyInconsistenciesExec,
   propose_outline: proposeOutlineExec,
   generate_style_sample: generateStyleSampleExec,
   generate_master_text: generateMasterTextExec,

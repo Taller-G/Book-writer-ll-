@@ -11,6 +11,7 @@ import { Stage1Sources } from "@/components/stages/Stage1Sources";
 import { Stage2Contract } from "@/components/stages/Stage2Contract";
 import { Stage3Style } from "@/components/stages/Stage3Style";
 import { Stage5MasterText } from "@/components/stages/Stage5MasterText";
+import { Stage5Refine } from "@/components/stages/Stage5Refine";
 import { Stage6Review } from "@/components/stages/Stage6Review";
 import { Stage7Format } from "@/components/stages/Stage7Format";
 import { Stage8Export } from "@/components/stages/Stage8Export";
@@ -72,16 +73,7 @@ export default async function StagePage({
             (getContract(db, id)?.mode === "prose" ? (
               <Stage5MasterText db={db} projectId={id} />
             ) : (
-              <StageTextPass
-                db={db}
-                projectId={id}
-                stage={5}
-                jobType="refine_pass_b"
-                runLabel="Run Refine Pass B"
-                inputKey="passA"
-                outputKey="passB"
-                intro="Shapes structure and flow within the editorial contract. Doubtful edits are sent to the review queue instead of being applied silently."
-              />
+              <Stage5Refine db={db} projectId={id} />
             ))}
           {stageNum === 6 && <Stage6Review db={db} projectId={id} />}
           {stageNum === 7 && <Stage7Format db={db} projectId={id} />}

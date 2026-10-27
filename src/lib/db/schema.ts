@@ -152,6 +152,42 @@ export const reviewQueue = sqliteTable("review_queue", {
   resolutionNote: text("resolution_note").notNull().default(""),
   createdAt: text("created_at").notNull(),
   resolvedAt: text("resolved_at"),
+  // Pass C severity, the reaction/question clip, and the Pass C batch id.
+  severity: text("severity", { enum: ["gross", "medium", "minor"] }),
+  clipPath: text("clip_path"),
+  batchId: text("batch_id"),
+  // Links the item back to its source row (e.g. a reactions.id).
+  refId: text("ref_id"),
+});
+
+export const reactions = sqliteTable("reactions", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  sourceId: text("source_id"),
+  kind: text("kind", { enum: ["laughter", "applause"] }).notNull(),
+  startMs: integer("start_ms").notNull().default(0),
+  endMs: integer("end_ms").notNull().default(0),
+  clipPath: text("clip_path"),
+  acoustic: text("acoustic").notNull().default("{}"),
+  semantic: text("semantic").notNull().default(""),
+  origin: text("origin", { enum: ["acoustic", "manual"] })
+    .notNull()
+    .default("acoustic"),
+  status: text("status", { enum: ["candidate", "confirmed", "rejected"] })
+    .notNull()
+    .default("candidate"),
+  charAnchor: integer("char_anchor"),
+  createdAt: text("created_at").notNull(),
+  confirmedAt: text("confirmed_at"),
+});
+
+export const editorialLocks = sqliteTable("editorial_locks", {
+  projectId: text("project_id").primaryKey(),
+  locked: integer("locked").notNull().default(0),
+  lockedVersion: integer("locked_version"),
+  lockedAt: text("locked_at"),
+  unlockedAt: text("unlocked_at"),
+  updatedAt: text("updated_at").notNull(),
 });
 
 export const formatConfigs = sqliteTable("format_configs", {
@@ -293,6 +329,8 @@ export type StyleRef = typeof styleRefs.$inferSelect;
 export type StageText = typeof stageTexts.$inferSelect;
 export type ChangeLogEntry = typeof changeLog.$inferSelect;
 export type ReviewItem = typeof reviewQueue.$inferSelect;
+export type Reaction = typeof reactions.$inferSelect;
+export type EditorialLock = typeof editorialLocks.$inferSelect;
 export type FormatConfig = typeof formatConfigs.$inferSelect;
 export type PdfVersion = typeof pdfVersions.$inferSelect;
 export type Cover = typeof covers.$inferSelect;
