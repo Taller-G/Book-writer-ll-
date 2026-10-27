@@ -189,13 +189,52 @@ CREATE TABLE IF NOT EXISTS pdf_versions (
   notes TEXT NOT NULL DEFAULT '',
   job_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  -- Render metadata; all nullable because HTML-export rows predate it.
+  -- Render metadata (Stage 6.1–6.2 layout engine); nullable because HTML-export
+  -- rows predate it.
   text_version INTEGER,
   format_hash TEXT,
   qa_passed INTEGER,
   qa_report_path TEXT,
+  -- Preview/correction-cycle fields (Stage 6.3). pages is a JSON array of
+  -- per-page text (the deterministic paginator's output), enabling the spread
+  -- viewer, the page-by-page visual diff and the page count. qa/diff hold the
+  -- QA-suite result and the diff against the previous version, built at compile.
+  pages TEXT NOT NULL DEFAULT '[]',
+  page_count INTEGER NOT NULL DEFAULT 0,
+  source_text_version INTEGER,
+  kind TEXT NOT NULL DEFAULT 'export'
+    CHECK (kind IN ('export','preview','rollback')),
+  -- When kind = 'rollback', the earlier version this one restored exactly.
+  rolled_back_from INTEGER,
+  qa TEXT NOT NULL DEFAULT '{}',
+  diff TEXT NOT NULL DEFAULT '{}',
   UNIQUE (project_id, version)
 );
+
+-- Persistent correction-cycle conversation, one thread per project. Each user
+-- message may carry an annotation (page_number + region + a marked-region
+-- image) or an attached screenshot. The agent classifies every request as a
+-- content change (reopens the closed master text, needs explicit confirmation)
+-- or a layout change (adjusts the template). Every applied change is also
+-- recorded in the append-only change_log.
+CREATE TABLE IF NOT EXISTS correction_messages (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('user','agent')),
+  body TEXT NOT NULL DEFAULT '',
+  page_number INTEGER,
+  region TEXT,
+  image TEXT,
+  classification TEXT CHECK (classification IN ('content','layout')),
+  status TEXT NOT NULL DEFAULT 'open'
+    CHECK (status IN ('open','awaiting_confirmation','applied','rejected','answered')),
+  pdf_version INTEGER,
+  target_ref TEXT,
+  proposal TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_correction_messages_project
+  ON correction_messages(project_id);
 
 CREATE TABLE IF NOT EXISTS covers (
   id TEXT PRIMARY KEY,
@@ -365,13 +404,24 @@ const ADDED_COLUMNS: Record<string, Array<[name: string, type: string]>> = {
   // Structured classification for change-log entries (nullable: pre-existing
   // and general audit rows carry none).
   change_log: [["category", "TEXT"]],
-  // Render metadata (layout-engine work order). All nullable: rows written by
-  // the HTML export predate real PDF rendering and carry none of this.
+  // Columns added to the pre-existing pdf_versions table by two work orders.
+  // CHECK constraints can't be added by ALTER TABLE, so `kind` is a plain TEXT
+  // column here (the repo only ever writes the three valid values).
   pdf_versions: [
+    // Render metadata (Stage 6.1–6.2 layout engine). All nullable: HTML-export
+    // rows predate real PDF rendering and carry none of this.
     ["text_version", "INTEGER"],
     ["format_hash", "TEXT"],
     ["qa_passed", "INTEGER"],
     ["qa_report_path", "TEXT"],
+    // Preview / correction-cycle fields (Stage 6.3).
+    ["pages", "TEXT NOT NULL DEFAULT '[]'"],
+    ["page_count", "INTEGER NOT NULL DEFAULT 0"],
+    ["source_text_version", "INTEGER"],
+    ["kind", "TEXT NOT NULL DEFAULT 'export'"],
+    ["rolled_back_from", "INTEGER"],
+    ["qa", "TEXT NOT NULL DEFAULT '{}'"],
+    ["diff", "TEXT NOT NULL DEFAULT '{}'"],
   ],
 };
 

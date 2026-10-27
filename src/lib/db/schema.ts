@@ -176,11 +176,44 @@ export const pdfVersions = sqliteTable("pdf_versions", {
   notes: text("notes").notNull().default(""),
   jobId: text("job_id"),
   createdAt: text("created_at").notNull(),
-  // Render metadata; null on rows written by the HTML export.
+  // Render metadata (Stage 6.1–6.2 layout engine); null on HTML export rows.
   textVersion: integer("text_version"),
   formatHash: text("format_hash"),
   qaPassed: integer("qa_passed"),
   qaReportPath: text("qa_report_path"),
+  // Preview / correction-cycle fields (Stage 6.3).
+  // JSON array of per-page text from the deterministic paginator.
+  pages: text("pages").notNull().default("[]"),
+  pageCount: integer("page_count").notNull().default(0),
+  sourceTextVersion: integer("source_text_version"),
+  kind: text("kind", { enum: ["export", "preview", "rollback"] })
+    .notNull()
+    .default("export"),
+  rolledBackFrom: integer("rolled_back_from"),
+  qa: text("qa").notNull().default("{}"),
+  diff: text("diff").notNull().default("{}"),
+});
+
+export const correctionMessages = sqliteTable("correction_messages", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  role: text("role", { enum: ["user", "agent"] }).notNull(),
+  body: text("body").notNull().default(""),
+  pageNumber: integer("page_number"),
+  // JSON {x,y,w,h} normalized 0..1 over the page.
+  region: text("region"),
+  // Data URI of the marked region (annotation) or an attached screenshot.
+  image: text("image"),
+  classification: text("classification", { enum: ["content", "layout"] }),
+  status: text("status", {
+    enum: ["open", "awaiting_confirmation", "applied", "rejected", "answered"],
+  })
+    .notNull()
+    .default("open"),
+  pdfVersion: integer("pdf_version"),
+  targetRef: text("target_ref"),
+  proposal: text("proposal"),
+  createdAt: text("created_at").notNull(),
 });
 
 export const covers = sqliteTable("covers", {
@@ -298,6 +331,7 @@ export type ChangeLogEntry = typeof changeLog.$inferSelect;
 export type ReviewItem = typeof reviewQueue.$inferSelect;
 export type FormatConfig = typeof formatConfigs.$inferSelect;
 export type PdfVersion = typeof pdfVersions.$inferSelect;
+export type CorrectionMessage = typeof correctionMessages.$inferSelect;
 export type Cover = typeof covers.$inferSelect;
 export type ChecklistItem = typeof checklistItems.$inferSelect;
 export type Outline = typeof outlines.$inferSelect;

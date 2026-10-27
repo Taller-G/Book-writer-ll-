@@ -27,9 +27,31 @@ import {
   saveStyleSample,
   type StyleProfileFields,
 } from "../repo/editorial";
+import {
+  buildPrintChecklist,
+  checklistItemLabels,
+  recommendBinding,
+  renderChecklistMarkdown,
+  type PrintChecklistInput,
+} from "../export/checklist";
+import { readPdfInfo } from "../export/pdfInfo";
+import { toCmykPressPdf } from "../export/pdfx";
+import { detectQrCodes } from "../export/qr";
+import { failingChecks, qaCheck, readQaReport } from "../export/qaReport";
+import { getPageSize, parseFormatData } from "../format/config";
 import { markJobRunning, markJobSucceeded } from "../repo/jobs";
 import { ensureRules } from "../repo/normalization";
-import { getFormatConfig, insertPdfVersion, nextPdfVersion } from "../repo/output";
+import {
+  getFormatConfig,
+  insertPdfVersion,
+  latestPdfVersion,
+  latestRender,
+  listCovers,
+  nextPdfVersion,
+  replaceChecklist,
+} from "../repo/output";
+import { computePreview } from "../preview/build";
+import { parsePages, serializePages } from "../preview/diff";
 import { getOutline, parseOutlineData, saveProposedOutline } from "../repo/outline";
 import { getProject } from "../repo/projects";
 import { addReviewItem, countPendingReviews } from "../repo/review";
@@ -748,6 +770,15 @@ const renderPdf: Executor = async (handle, job) => {
   })();
 };
 
+// Stage 8 export: assembles the print-shop deliverables from the QA-passed
+// Stage 7 render. It refuses to run while the latest render's QA report has any
+// failing check (naming them), and every checklist value — page count, embedded
+// fonts, image resolution — is read off the actual compiled PDF and its report,
+// never off the project config. The deliverable bundle is a copied interior
+// PDF, an auto-generated print-shop checklist + one-line summary, an optional
+// CMYK/PDF-X variant for print destinations, and the cover spread when one is
+// attached (otherwise flagged pending). A book that contains QR codes carries a
+// print-test reminder.
 const exportBook: Executor = async (handle, job) => {
   const { db, sqlite } = handle;
   const finalText = latestText(db, job.projectId, "final");
@@ -756,80 +787,185 @@ const exportBook: Executor = async (handle, job) => {
       "There is no FINAL text to export. Finalize the text in Review first.",
     );
   }
+  const render = latestRender(db, job.projectId);
+  if (!render || !render.qaReportPath) {
+    throw new JobInputError(
+      "There is no typeset PDF to export. Render the QA-checked PDF in Stage 7 (Format) first.",
+    );
+  }
+  // Honour the QA report already on record: a failing report blocks the export,
+  // naming every defect so the author knows exactly what to fix and where.
+  const qa = readQaReport(render.qaReportPath);
+  const failing = failingChecks(qa);
+  if (!qa.passed || failing.length > 0 || render.qaPassed !== 1) {
+    const reasons = failing.map(
+      (c) =>
+        `- ${c.title}${c.pages.length ? ` (page(s) ${c.pages.join(", ")})` : ""}: ${c.detail}`,
+    );
+    throw new JobInputError(
+      `Export blocked — the QA report for PDF v${render.version} has ${failing.length} failing check(s):\n` +
+        reasons.join("\n") +
+        "\nRe-render in Stage 7 until QA passes, then export.",
+    );
+  }
+
+  const project = getProject(db, job.projectId);
+  if (!project) throw new JobInputError("Project not found.");
   const format = getFormatConfig(db, job.projectId);
-  // The contract's destination decides the legal page, the ISBN placeholder
-  // and the color profile of the export.
+  const formatData = parseFormatData(format.data);
+  // The contract's destination decides the colour space (and thus whether a
+  // PDF/X variant is required).
   const contract = getContract(db, job.projectId);
   const destination = contract?.destination
     ? destinationOption(contract.destination)
     : undefined;
+  const colorMode = destination?.colorProfile ?? "sRGB";
+
+  // Page count straight off the compiled PDF — never estimated from the config.
+  const info = readPdfInfo(render.filePath);
+  const fontsCheck = qaCheck(qa, "fonts_embedded");
+  const imageCheck = qaCheck(qa, "image_dpi");
+  const hasQrCodes = detectQrCodes(finalText.content);
+  const selectedCover = listCovers(db, job.projectId).find(
+    (c) => c.selected === 1 && c.filePath,
+  );
+
   markJobRunning(
     db,
     job.id,
     {
       stageKey: "final",
       version: finalText.version,
-      trimSize: format.trimSize,
-      contractVersion: contract?.version,
-      destination: contract?.destination,
-      colorProfile: destination?.colorProfile,
+      fromRenderVersion: render.version,
+      pageCount: info.pageCount,
+      colorProfile: colorMode,
+      hasQrCodes,
     },
     finalText.version,
   );
   await breathe();
-  const version = nextPdfVersion(db, job.projectId);
-  const dir = path.join(dataDir(), "exports", job.projectId);
-  fs.mkdirSync(dir, { recursive: true });
-  const filePath = path.join(dir, `book-v${version}.html`);
-  const legalBlocks: string[] = [];
-  if (contract?.legalText.trim()) {
-    legalBlocks.push(
-      ...contract.legalText
-        .split(/\n\n+/)
-        .map((p) => `<p>${escapeHtml(p.trim())}</p>`),
-    );
-  }
-  if (destination?.needsIsbn && !/ISBN/i.test(contract?.legalText ?? "")) {
-    legalBlocks.push(`<p>ISBN: ___-__-_____-__-_ (to be assigned)</p>`);
-  }
-  const frontMatter =
-    legalBlocks.length > 0
-      ? `<section class="legal">${legalBlocks.join("\n")}</section>\n<hr>\n`
-      : "";
-  const body = finalText.content
-    .split(/\n\n+/)
-    .map((p) =>
-      p.startsWith("## ")
-        ? `<h2>${escapeHtml(p.slice(3))}</h2>`
-        : `<p>${escapeHtml(p)}</p>`,
-    )
-    .join("\n");
-  fs.writeFileSync(
-    filePath,
-    `<!doctype html><html><head><meta charset="utf-8"><title>Export v${version}</title>
-${destination ? `<meta name="color-profile" content="${destination.colorProfile}">\n` : ""}<style>body{font-family:${format.fontFamily},serif;font-size:${format.fontSizePt}pt;line-height:${format.lineHeight};max-width:40em;margin:2em auto;}</style>
-</head><body>${frontMatter}${body}</body></html>`,
+
+  // The same export also feeds the Stage 6.3 preview viewer and correction
+  // cycle: lay the approved text into pages, QA it and diff against the previous
+  // version, so the preview is seeded from one code path.
+  const previousPdf = latestPdfVersion(db, job.projectId);
+  const preview = computePreview(
+    finalText.content,
+    formatData,
+    parsePages(previousPdf?.pages),
   );
+
+  const version = nextPdfVersion(db, job.projectId);
+  const bundleDir = path.join(
+    dataDir(),
+    "exports",
+    job.projectId,
+    `export-v${version}`,
+  );
+  fs.mkdirSync(bundleDir, { recursive: true });
+
+  // Interior PDF: the QA-passed render, copied into the deliverable bundle.
+  const interiorPath = path.join(bundleDir, "book-interior.pdf");
+  fs.copyFileSync(render.filePath, interiorPath);
+
+  // PDF/X variant when the destination prints in CMYK — best effort; a missing
+  // Ghostscript degrades to a checklist note, it never fails the export.
+  const pdfxRequired = colorMode === "CMYK";
+  let pdfxPath: string | undefined;
+  if (pdfxRequired) {
+    const candidate = path.join(bundleDir, "book-pdfx.pdf");
+    if (toCmykPressPdf(interiorPath, candidate)) pdfxPath = candidate;
+  }
+  const pdfxProduced = pdfxPath !== undefined;
+
+  // Cover spread only when a selected cover carries a real file; else pending.
+  let coverPath: string | undefined;
+  if (selectedCover?.filePath && fs.existsSync(selectedCover.filePath)) {
+    coverPath = path.join(
+      bundleDir,
+      `cover-spread${path.extname(selectedCover.filePath)}`,
+    );
+    fs.copyFileSync(selectedCover.filePath, coverPath);
+  }
+
+  const checklistInput: PrintChecklistInput = {
+    projectTitle: project.title,
+    pageCount: info.pageCount,
+    pageSize: getPageSize(formatData.pageSize),
+    colorMode,
+    destinationLabel: destination?.label ?? "unspecified",
+    fontsEmbedded: fontsCheck?.passed ?? false,
+    fontsDetail: fontsCheck?.detail ?? "font embedding unknown",
+    imageResolution: imageCheck?.detail ?? "image resolution unknown",
+    bleedMm: 3,
+    binding: recommendBinding(info.pageCount),
+    hasQrCodes,
+    coverStatus: coverPath ? "attached" : "pending",
+    pdfx: { required: pdfxRequired, produced: pdfxProduced },
+  };
+  const checklist = buildPrintChecklist(checklistInput);
+
+  const checklistPath = path.join(bundleDir, "print-checklist.md");
+  fs.writeFileSync(
+    checklistPath,
+    renderChecklistMarkdown(project.title, checklist),
+  );
+  const oneLinerPath = path.join(bundleDir, "one-liner.txt");
+  fs.writeFileSync(oneLinerPath, checklist.oneLiner + "\n");
+
   sqlite.transaction(() => {
+    // The UI's toggle-checklist is regenerated from this export's real data.
+    replaceChecklist(db, job.projectId, checklistItemLabels(checklist));
     const pdf = insertPdfVersion(db, {
       projectId: job.projectId,
       version,
-      filePath,
+      filePath: interiorPath,
       notes:
-        `Export from FINAL v${finalText.version}, trim ${format.trimSize}` +
-        (destination
-          ? `, destination ${destination.label} (${destination.colorProfile})`
-          : ""),
+        `Export bundle v${version} from FINAL v${finalText.version} / PDF v${render.version} ` +
+        `(${info.pageCount} pp, ${checklist.interior.colorMode})` +
+        (hasQrCodes ? ", QR print-test reminder" : ""),
       jobId: job.id,
+      pages: serializePages(preview.pages),
+      pageCount: preview.pageCount,
+      sourceTextVersion: finalText.version,
+      kind: "export",
+      qa: JSON.stringify(preview.qa),
+      diff: JSON.stringify(preview.diff),
     });
     appendChange(db, {
       projectId: job.projectId,
-      what: `Export v${version} generated (${path.basename(filePath)})`,
+      what:
+        `Export bundle v${version} generated: interior PDF (${info.pageCount} pp), ` +
+        `print-shop checklist, one-liner` +
+        (pdfxProduced ? ", PDF/X (CMYK)" : "") +
+        (coverPath ? ", cover spread" : "") +
+        (hasQrCodes ? "; QR print-test reminder included" : ""),
       where: "stage 8 · exports",
-      why: "print-ready export requested",
+      why: "print-ready export requested; built from the QA-passed render",
       authorizedBy: `job ${job.type} (${job.id})`,
     });
-    markJobSucceeded(db, job.id, { pdfVersionId: pdf.id, filePath }, version);
+    markJobSucceeded(
+      db,
+      job.id,
+      {
+        pdfVersionId: pdf.id,
+        bundleDir,
+        interiorPath,
+        pdfxPath: pdfxPath ?? null,
+        coverPath: coverPath ?? null,
+        checklistPath,
+        oneLinerPath,
+        oneLiner: checklist.oneLiner,
+        pageCount: info.pageCount,
+        colorMode: checklist.interior.colorMode,
+        hasQrCodes,
+        qrReminder: checklist.qrReminder,
+        coverStatus: checklistInput.coverStatus,
+        pdfx: checklistInput.pdfx,
+        fromRenderVersion: render.version,
+      },
+      version,
+    );
   })();
 };
 
@@ -1281,13 +1417,6 @@ const proposeApparatusExec: Executor = async (handle, job) => {
     );
   })();
 };
-
-function escapeHtml(s: string): string {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
 
 export const EXECUTORS: Record<string, Executor> = {
   ingest_sources: ingestSources,
