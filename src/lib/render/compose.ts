@@ -11,7 +11,23 @@ import { resolveFont, type ResolvedFont } from "./fonts";
 
 export type BookBlock =
   | { kind: "paragraph"; text: string }
-  | { kind: "separator" };
+  | { kind: "separator" }
+  // A placed image (spec §4 Stage 6.4). Carries no words, so it never affects
+  // the word-for-word verification of the approved text.
+  | { kind: "image"; path: string; sizeOption: ImageSizeOption };
+
+export type ImageSizeOption = "column" | "half" | "full";
+
+/** A placed image the layout engine positions in the body, in narrative order. */
+export interface PlacedImage {
+  /** Absolute path graphicx includes. */
+  path: string;
+  sizeOption: ImageSizeOption;
+  /** The passage the image is anchored to; empty appends after the last block. */
+  anchorText: string;
+  /** Narrative order — the order images appear and are inserted. */
+  order: number;
+}
 
 export interface BookChapter {
   title: string;
@@ -143,12 +159,66 @@ const BODY_END = "% ===BOOK BODY END===";
 /** The exact text the scene-break macro prints — QA locates it on the page. */
 export const SEPARATOR_TEXT = "* * *";
 
+/** graphicx keyval options for each printed size option. */
+const IMAGE_SIZE_OPTIONS: Record<ImageSizeOption, string> = {
+  column: "width=\\linewidth,keepaspectratio",
+  half: "width=\\linewidth,height=0.5\\textheight,keepaspectratio",
+  full: "width=\\linewidth,height=0.95\\textheight,keepaspectratio",
+};
+
+/**
+ * Splice placed images into the parsed book, each after the paragraph it is
+ * anchored to (first unused match), in narrative order. Images without a
+ * matching anchor are appended after the last block so nothing is dropped.
+ * Inserting them inline (not as floats) keeps them next to their passage and
+ * avoids the float drift that opens gaps in the text.
+ */
+export function placeImages(model: BookModel, images: PlacedImage[]): void {
+  const ordered = images.slice().sort((a, b) => a.order - b.order);
+  const allBlockLists = (): BookBlock[][] => [
+    model.intro,
+    ...model.chapters.map((c) => c.blocks),
+  ];
+  const used = new Set<BookBlock>();
+  for (const img of ordered) {
+    const block: BookBlock = {
+      kind: "image",
+      path: img.path,
+      sizeOption: img.sizeOption,
+    };
+    const anchor = img.anchorText.replace(/\s+/g, " ").trim().toLowerCase();
+    let placed = false;
+    if (anchor) {
+      for (const blocks of allBlockLists()) {
+        const idx = blocks.findIndex(
+          (b) =>
+            b.kind === "paragraph" &&
+            !used.has(b) &&
+            b.text.toLowerCase().includes(anchor),
+        );
+        if (idx !== -1) {
+          used.add(blocks[idx]);
+          blocks.splice(idx + 1, 0, block);
+          placed = true;
+          break;
+        }
+      }
+    }
+    if (!placed) {
+      const lists = allBlockLists();
+      lists[lists.length - 1].push(block);
+    }
+  }
+}
+
 export function composeBook(
   approvedText: string,
   format: FormatConfig,
   meta: { title: string; author: string },
+  images: PlacedImage[] = [],
 ): Composition {
   const model = parseBook(approvedText);
+  if (images.length > 0) placeImages(model, images);
   const trim = TRIM_SIZES[format.trimSize] ?? TRIM_SIZES.A5;
   const margins = parseMargins(format.margins);
   const font = resolveFont(format.fontFamily);
@@ -162,7 +232,13 @@ export function composeBook(
   const body: string[] = [];
   const emitBlocks = (blocks: BookBlock[]) => {
     for (const b of blocks) {
-      body.push(b.kind === "separator" ? "\\scenebreak" : escapeLatex(b.text));
+      if (b.kind === "separator") {
+        body.push("\\scenebreak");
+      } else if (b.kind === "image") {
+        body.push(`\\bookimage{${b.path}}{${IMAGE_SIZE_OPTIONS[b.sizeOption]}}`);
+      } else {
+        body.push(escapeLatex(b.text));
+      }
       body.push("");
     }
   };
@@ -173,6 +249,7 @@ export function composeBook(
     emitBlocks(ch.blocks);
   }
 
+  const hasImages = images.length > 0;
   const tex = `\\documentclass[${sizePt}pt,twoside,openright]{memoir}
 \\setstocksize{${trim.height}}{${trim.width}}
 \\settrimmedsize{${trim.height}}{${trim.width}}{*}
@@ -180,7 +257,7 @@ export function composeBook(
 \\setulmarginsandblock{${margins.top}}{${margins.bottom}}{*}
 \\checkandfixthelayout
 \\usepackage{fontspec}
-\\setmainfont{${font.family}}
+${hasImages ? "\\usepackage{graphicx}\n" : ""}\\setmainfont{${font.family}}
 \\linespread{${linespread}}
 \\clubpenalty=10000
 \\widowpenalty=10000
@@ -189,6 +266,7 @@ export function composeBook(
 \\pagestyle{plain}
 \\aliaspagestyle{chapter}{plain}
 \\newcommand{\\scenebreak}{\\par\\fancybreak{*\\quad*\\quad*}\\par}
+${hasImages ? "% Placed images print inline, centered, with vertical breathing room.\n\\newcommand{\\bookimage}[2]{\\par\\vspace{0.6\\baselineskip}\\begin{center}\\includegraphics[#2]{#1}\\end{center}\\vspace{0.6\\baselineskip}\\par}\n" : ""}
 \\title{${escapeLatex(meta.title)}}
 \\author{${escapeLatex(meta.author)}}
 \\begin{document}
@@ -231,6 +309,7 @@ export function approvedWordStream(approvedText: string): string[] {
   const walk = (blocks: BookBlock[]) => {
     for (const b of blocks) {
       if (b.kind === "separator") out.push(SEP_TOKEN);
+      else if (b.kind === "image") continue; // images carry no words
       else out.push(...words(b.text));
     }
   };
@@ -260,6 +339,8 @@ export function composedWordStream(tex: string): string[] {
   for (const line of bodyLines) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("%")) continue;
+    // Placed images carry no words — skip the macro line entirely.
+    if (trimmed.startsWith("\\bookimage")) continue;
     if (trimmed === "\\scenebreak") {
       out.push(SEP_TOKEN);
       continue;

@@ -27,7 +27,13 @@ export async function runJob(handle: DbHandle, jobId: string): Promise<Job> {
 /** Enqueue a stage job and run it to completion. */
 export async function enqueueAndRun(
   handle: DbHandle,
-  input: { projectId: string; stage: number; type: string },
+  input: {
+    projectId: string;
+    stage: number;
+    type: string;
+    /** Creation-time parameters (e.g. an image prompt) persisted on the job. */
+    params?: unknown;
+  },
 ): Promise<Job> {
   const job = createJob(handle.db, input);
   return runJob(handle, job.id);

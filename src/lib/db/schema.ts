@@ -240,6 +240,37 @@ export const apparatusSections = sqliteTable("apparatus_sections", {
   updatedAt: text("updated_at").notNull(),
 });
 
+export const bookImages = sqliteTable("book_images", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  origin: text("origin", { enum: ["own", "ai", "third_party"] })
+    .notNull()
+    .default("own"),
+  filePath: text("file_path").notNull(),
+  originalName: text("original_name").notNull().default(""),
+  mimeType: text("mime_type").notNull().default(""),
+  sizeBytes: integer("size_bytes").notNull().default(0),
+  checksumSha1: text("checksum_sha1").notNull().default(""),
+  widthPx: integer("width_px").notNull().default(0),
+  heightPx: integer("height_px").notNull().default(0),
+  caption: text("caption").notNull().default(""),
+  altText: text("alt_text").notNull().default(""),
+  sourceCredit: text("source_credit").notNull().default(""),
+  licenseNote: text("license_note").notNull().default(""),
+  aiModel: text("ai_model").notNull().default(""),
+  aiPrompt: text("ai_prompt").notNull().default(""),
+  anchorText: text("anchor_text").notNull().default(""),
+  sizeOption: text("size_option", { enum: ["column", "half", "full"] })
+    .notNull()
+    .default("column"),
+  narrativeOrder: integer("narrative_order").notNull().default(0),
+  status: text("status", { enum: ["review", "placed", "discarded"] })
+    .notNull()
+    .default("review"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const jobs = sqliteTable("jobs", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),
@@ -300,5 +331,6 @@ export type ChecklistItem = typeof checklistItems.$inferSelect;
 export type Outline = typeof outlines.$inferSelect;
 export type NormalizationRule = typeof normalizationRules.$inferSelect;
 export type ApparatusSection = typeof apparatusSections.$inferSelect;
+export type BookImage = typeof bookImages.$inferSelect;
 export type Job = typeof jobs.$inferSelect;
 export type StageProgressRow = typeof stageProgress.$inferSelect;

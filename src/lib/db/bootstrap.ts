@@ -265,6 +265,49 @@ CREATE TABLE IF NOT EXISTS apparatus_sections (
 CREATE INDEX IF NOT EXISTS idx_apparatus_sections_project
   ON apparatus_sections(project_id);
 
+-- Book images (spec §4 Stage 6.4): illustrations uploaded or AI-generated,
+-- reviewed early to catch artifacts, placed against a passage at a chosen
+-- printed size, reordered by narrative order, and credited by origin. Pixel
+-- dimensions are captured on intake so the printed dpi can be verified before
+-- any render. The image bytes live under data/images/{projectId}/{imageId}/.
+CREATE TABLE IF NOT EXISTS book_images (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  -- Drives the automatic credit line and whether a disclaimer is required.
+  origin TEXT NOT NULL DEFAULT 'own'
+    CHECK (origin IN ('own','ai','third_party')),
+  file_path TEXT NOT NULL,
+  original_name TEXT NOT NULL DEFAULT '',
+  mime_type TEXT NOT NULL DEFAULT '',
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  checksum_sha1 TEXT NOT NULL DEFAULT '',
+  -- Natural pixel dimensions, read from the file header at intake (0 if the
+  -- format was not recognised); the printed-dpi check divides these by the
+  -- printed size at the chosen layout option.
+  width_px INTEGER NOT NULL DEFAULT 0,
+  height_px INTEGER NOT NULL DEFAULT 0,
+  caption TEXT NOT NULL DEFAULT '',
+  alt_text TEXT NOT NULL DEFAULT '',
+  -- Third-party attribution and licence note; feed the credit line verbatim.
+  source_credit TEXT NOT NULL DEFAULT '',
+  license_note TEXT NOT NULL DEFAULT '',
+  -- AI provenance, kept for the AI-origin credit line and the call log.
+  ai_model TEXT NOT NULL DEFAULT '',
+  ai_prompt TEXT NOT NULL DEFAULT '',
+  -- Placement: the passage the image is anchored to and its printed size.
+  anchor_text TEXT NOT NULL DEFAULT '',
+  size_option TEXT NOT NULL DEFAULT 'column'
+    CHECK (size_option IN ('column','half','full')),
+  narrative_order INTEGER NOT NULL DEFAULT 0,
+  -- 'review' until the user places it (so new images land in the review grid
+  -- first); 'placed' once anchored; 'discarded' when caught as an artifact.
+  status TEXT NOT NULL DEFAULT 'review'
+    CHECK (status IN ('review','placed','discarded')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_book_images_project ON book_images(project_id);
+
 -- Async stage jobs: versioned input/output, visible status, retryable.
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,

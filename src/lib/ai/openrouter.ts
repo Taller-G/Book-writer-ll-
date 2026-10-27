@@ -9,6 +9,8 @@ import {
 import {
   buildSystemPrompt,
   type AiClient,
+  type AiImageRequest,
+  type AiImageResponse,
   type AiRequest,
   type AiResponse,
 } from "./types";
@@ -24,6 +26,15 @@ import {
 // can reach an error message (and therefore the jobs.error column / UI).
 
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+/**
+ * The model used for AI image generation. Claude writes the text; image
+ * generation needs an image-capable model, so it is configured separately from
+ * the large/fast text roles (overridable via BOOK_WRITER_IMAGE_MODEL).
+ */
+export function imageModelSlug(): string {
+  return process.env.BOOK_WRITER_IMAGE_MODEL ?? "google/gemini-2.5-flash-image";
+}
 
 /** Attribution headers OpenRouter asks clients to send. */
 export const OPENROUTER_APP_HEADERS = {
@@ -61,6 +72,24 @@ interface CompletionBody {
   error?: { message?: string };
 }
 
+interface ImageCompletionBody {
+  choices?: {
+    message?: {
+      images?: { image_url?: { url?: string } }[];
+    };
+  }[];
+  model?: string;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
+  error?: { message?: string };
+}
+
+/** Decode a `data:image/...;base64,...` URL into bytes + mime type. */
+function decodeDataUrl(url: string): { data: Buffer; mimeType: string } | null {
+  const m = url.match(/^data:([^;]+);base64,(.*)$/s);
+  if (!m) return null;
+  return { mimeType: m[1], data: Buffer.from(m[2], "base64") };
+}
+
 const BACKOFF_BASE_MS = 500;
 
 export class OpenRouterClient implements AiClient {
@@ -95,6 +124,88 @@ export class OpenRouterClient implements AiClient {
       `The AI provider is unavailable right now (tried ${models.join(", ")}). ` +
         `Please retry in a few minutes.${lastProviderDetail ? ` Detail: ${lastProviderDetail}` : ""}`,
     );
+  }
+
+  async generateImage(request: AiImageRequest): Promise<AiImageResponse> {
+    const model = request.model ?? imageModelSlug();
+    for (let attempt = 0; ; attempt++) {
+      let res: Response;
+      try {
+        res = await this.opts.fetchImpl(`${this.opts.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.opts.apiKey}`,
+            "Content-Type": "application/json",
+            ...OPENROUTER_APP_HEADERS,
+          },
+          body: JSON.stringify({
+            model,
+            // OpenRouter returns generated images in message.images when the
+            // image modality is requested on an image-capable model.
+            modalities: ["image", "text"],
+            messages: [{ role: "user", content: request.prompt }],
+          }),
+        });
+      } catch (err) {
+        throw new AiProviderError(
+          "The image generator is unreachable right now. Please retry in a few " +
+            `minutes. Detail: ${redactSecrets(err instanceof Error ? err.message : String(err))}`,
+        );
+      }
+
+      if (res.ok) return this.parseImage(res, model, request);
+      if (res.status === 401 || res.status === 403) {
+        throw new AiAuthError(
+          "Invalid key: OpenRouter rejected the configured API key. " +
+            "Check it in Settings and save it again.",
+        );
+      }
+      if (res.status === 402) throw new AiCreditsError(await this.safeErrorDetail(res));
+      if (res.status === 429) {
+        if (attempt >= this.opts.maxRetries) {
+          throw new AiRateLimitError(
+            "Rate limited: OpenRouter kept returning 429 while generating the " +
+              "image. Try again shortly.",
+          );
+        }
+        await this.opts.sleep(this.backoffMs(res, attempt));
+        continue;
+      }
+      throw new AiProviderError(
+        `OpenRouter could not generate the image (HTTP ${res.status}) with model ${model}. ` +
+          `Detail: ${await this.safeErrorDetail(res)}`,
+      );
+    }
+  }
+
+  private async parseImage(
+    res: Response,
+    model: string,
+    request: AiImageRequest,
+  ): Promise<AiImageResponse> {
+    const body = (await res.json()) as ImageCompletionBody;
+    const url = body.choices?.[0]?.message?.images?.[0]?.image_url?.url;
+    const decoded = typeof url === "string" ? decodeDataUrl(url) : null;
+    if (!decoded) {
+      throw new AiProviderError(
+        "The image generator returned no usable image. Retry the generation.",
+      );
+    }
+    const usage = {
+      promptTokens: body.usage?.prompt_tokens ?? 0,
+      completionTokens: body.usage?.completion_tokens ?? 0,
+      costUsd: body.usage?.cost ?? 0,
+    };
+    const served = body.model ?? model;
+    this.opts.onUsage?.({
+      projectId: request.projectId,
+      jobId: request.jobId,
+      role: "large",
+      model: served,
+      systemPrompt: `image generation: ${request.prompt}`,
+      ...usage,
+    });
+    return { data: decoded.data, mimeType: decoded.mimeType, model: served, usage };
   }
 
   private async tryModel(

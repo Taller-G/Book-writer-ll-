@@ -4,6 +4,10 @@ import { createAiClient, type AiClient } from "../ai";
 import { destinationOption, TONES } from "../contract/definitions";
 import { dataDir, type Db, type DbHandle } from "../db/client";
 import type { EditorialContract, Job, StyleProfile } from "../db/schema";
+import { imageAbsolutePath, readImageFile, saveImageFile } from "../files/store";
+import { readImageDimensions } from "../images/dimensions";
+import { imageDpiWarnings } from "../images/dpi";
+import { parseFormatData } from "../format/config";
 import { proposeApparatus } from "../master/apparatus";
 import {
   assembleMasterText,
@@ -15,6 +19,13 @@ import { proposeOutline } from "../master/outline";
 import { segmentText } from "../master/segments";
 import { acceptedApparatus, saveProposedApparatus } from "../repo/apparatus";
 import { appendChange } from "../repo/changeLog";
+import {
+  addImage,
+  imageCreditsGate,
+  listPlacedImages,
+  regenerateImageCredits,
+  renderableImageCredits,
+} from "../repo/images";
 import {
   getConfirmedStyleProfile,
   getContract,
@@ -35,6 +46,7 @@ import { listSources } from "../repo/sources";
 import { listStyleRefs } from "../repo/styleRefs";
 import { insertText, latestText, nextTextVersion } from "../repo/texts";
 import { renderBook } from "../render/render";
+import { newId } from "../util";
 
 // Baseline deterministic executors — the versioned input/output contract
 // other work orders replace with Claude-powered implementations. An executor
@@ -458,17 +470,50 @@ const renderPdf: Executor = async (handle, job) => {
   const project = getProject(db, job.projectId);
   if (!project) throw new JobInputError("Project not found.");
   const format = getFormatConfig(db, job.projectId);
+  // Placed images enter the layout engine's input; the credits section (when
+  // the book has images) is appended so it is typeset and verified with the
+  // text. Pre-render dpi warnings are computed from pixel size vs printed size
+  // BEFORE compiling, so a too-small image is flagged without a full render.
+  const placed = listPlacedImages(db, job.projectId);
+  const images = placed.map((img) => ({
+    path: imageAbsolutePath(img.filePath),
+    sizeOption: img.sizeOption,
+    anchorText: img.anchorText,
+    order: img.narrativeOrder,
+  }));
+  const dpiWarnings = imageDpiWarnings(
+    placed.map((img) => ({
+      id: img.id,
+      widthPx: img.widthPx,
+      heightPx: img.heightPx,
+      sizeOption: img.sizeOption,
+      caption: img.caption,
+      originalName: img.originalName,
+    })),
+    parseFormatData(format.data),
+  );
+  const credits = renderableImageCredits(db, job.projectId);
+  const approvedText = credits
+    ? `${finalText.content}\n\n## ${credits.title}\n\n${credits.content}`
+    : finalText.content;
   markJobRunning(
     db,
     job.id,
-    { stageKey: "final", version: finalText.version, trimSize: format.trimSize },
+    {
+      stageKey: "final",
+      version: finalText.version,
+      trimSize: format.trimSize,
+      placedImages: placed.length,
+      dpiWarnings: dpiWarnings.map((w) => w.message),
+    },
     finalText.version,
   );
   const version = nextPdfVersion(db, job.projectId);
   const outDir = path.join(dataDir(), "exports", job.projectId);
   const result = await renderBook({
-    approvedText: finalText.content,
+    approvedText,
     format,
+    images,
     meta: { title: project.title, author: project.author },
     buildDir: path.join(outDir, "build"),
     outDir,
@@ -488,13 +533,24 @@ const renderPdf: Executor = async (handle, job) => {
       qaReportPath: result.qaFiles.markdownPath,
     });
     const failing = result.qaReport.checks.filter((c) => !c.passed);
+    for (const w of dpiWarnings) {
+      appendChange(db, {
+        projectId: job.projectId,
+        what: `Pre-render dpi warning: ${w.message}`,
+        where: "stage 7 · images · dpi",
+        why: "image printed resolution checked against 300 dpi before compiling",
+        authorizedBy: `job ${job.type} (${job.id})`,
+      });
+    }
     appendChange(db, {
       projectId: job.projectId,
       what:
         `PDF v${version} rendered (${path.basename(result.pdfPath)}); QA ` +
         (result.qaReport.passed
           ? "passed all checks"
-          : `failed: ${failing.map((c) => c.id).join(", ")}`),
+          : `failed: ${failing.map((c) => c.id).join(", ")}`) +
+        (placed.length > 0 ? `; ${placed.length} image(s) placed` : "") +
+        (dpiWarnings.length > 0 ? `; ${dpiWarnings.length} dpi warning(s)` : ""),
       where: "stage 7 · pdf renders",
       why: "layout render of the approved text requested",
       authorizedBy: `job ${job.type} (${job.id})`,
@@ -508,6 +564,8 @@ const renderPdf: Executor = async (handle, job) => {
         qaPassed: result.qaReport.passed,
         qaReportPath: result.qaFiles.markdownPath,
         recoveredFromCorruption: result.recoveredFromCorruption,
+        placedImages: placed.length,
+        dpiWarnings: dpiWarnings.map((w) => w.message),
       },
       version,
     );
@@ -522,6 +580,10 @@ const exportBook: Executor = async (handle, job) => {
       "There is no FINAL text to export. Finalize the text in Review first.",
     );
   }
+  // A book with images must carry an accepted credits section — block the
+  // export if it was discarded or never accepted.
+  const creditsCheck = imageCreditsGate(db, job.projectId);
+  if (!creditsCheck.ok) throw new JobInputError(creditsCheck.reason!);
   const format = getFormatConfig(db, job.projectId);
   // The contract's destination decides the legal page, the ISBN placeholder
   // and the color profile of the export.
@@ -562,14 +624,49 @@ const exportBook: Executor = async (handle, job) => {
     legalBlocks.length > 0
       ? `<section class="legal">${legalBlocks.join("\n")}</section>\n<hr>\n`
       : "";
-  const body = finalText.content
-    .split(/\n\n+/)
-    .map((p) =>
+  // Placed images are embedded at their anchor passages (as data URIs so the
+  // HTML is self-contained); the accepted credits section is appended last.
+  const placedExport = listPlacedImages(db, job.projectId);
+  const usedImages = new Set<string>();
+  const figureHtml = (img: (typeof placedExport)[number]): string => {
+    let dataUri = "";
+    try {
+      const bytes = readImageFile(img.filePath);
+      dataUri = `data:${img.mimeType || "image/png"};base64,${bytes.toString("base64")}`;
+    } catch {
+      return "";
+    }
+    const cls = `image image-${img.sizeOption}`;
+    const caption = img.caption.trim()
+      ? `<figcaption>${escapeHtml(img.caption)}</figcaption>`
+      : "";
+    return `<figure class="${cls}"><img alt="${escapeHtml(img.altText)}" src="${dataUri}">${caption}</figure>`;
+  };
+  const credits = renderableImageCredits(db, job.projectId);
+  const effectiveContent = credits
+    ? `${finalText.content}\n\n## ${credits.title}\n\n${credits.content}`
+    : finalText.content;
+  const bodyParts: string[] = [];
+  for (const p of effectiveContent.split(/\n\n+/)) {
+    bodyParts.push(
       p.startsWith("## ")
         ? `<h2>${escapeHtml(p.slice(3))}</h2>`
         : `<p>${escapeHtml(p)}</p>`,
-    )
-    .join("\n");
+    );
+    // Drop any image anchored to this passage right after it.
+    for (const img of placedExport) {
+      const anchor = img.anchorText.replace(/\s+/g, " ").trim().toLowerCase();
+      if (anchor && !usedImages.has(img.id) && p.toLowerCase().includes(anchor)) {
+        usedImages.add(img.id);
+        bodyParts.push(figureHtml(img));
+      }
+    }
+  }
+  // Images without a matching anchor still appear, before the credits.
+  for (const img of placedExport) {
+    if (!usedImages.has(img.id)) bodyParts.push(figureHtml(img));
+  }
+  const body = bodyParts.filter(Boolean).join("\n");
   fs.writeFileSync(
     filePath,
     `<!doctype html><html><head><meta charset="utf-8"><title>Export v${version}</title>
@@ -1048,6 +1145,84 @@ const proposeApparatusExec: Executor = async (handle, job) => {
   })();
 };
 
+// --- Stage 6.4: AI image generation -----------------------------------------
+// Generates an image from a prompt through the AI seam and files it straight
+// into the review grid (status 'review', origin 'ai'), so a newly generated
+// image is seen before it is ever placed. The AI-origin credit line follows
+// automatically from the stored origin when the credits section is rebuilt.
+
+interface GenerateImageParams {
+  prompt: string;
+  caption?: string;
+}
+
+function parseGenerateImageParams(raw: string): GenerateImageParams {
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    data = {};
+  }
+  const d = (data ?? {}) as Record<string, unknown>;
+  const prompt = typeof d.prompt === "string" ? d.prompt.trim() : "";
+  if (!prompt) {
+    throw new JobInputError(
+      "No prompt was given for the image. Describe the image to generate.",
+    );
+  }
+  return { prompt, caption: typeof d.caption === "string" ? d.caption : "" };
+}
+
+const generateImageExec: Executor = async (handle, job) => {
+  const { db, sqlite } = handle;
+  const project = getProject(db, job.projectId);
+  if (!project) throw new JobInputError("Project not found.");
+  const params = parseGenerateImageParams(job.input);
+  markJobRunning(db, job.id, { prompt: params.prompt }, 1);
+  const imageId = newId();
+  const result = await aiFactory(db).generateImage({
+    projectId: job.projectId,
+    jobId: job.id,
+    prompt: params.prompt,
+  });
+  const dims = readImageDimensions(result.data);
+  const ext = result.mimeType.includes("jpeg") ? "jpg" : "png";
+  const filename = `ai-${imageId}.${ext}`;
+  const stored = saveImageFile(job.projectId, imageId, filename, result.data);
+  sqlite.transaction(() => {
+    addImage(db, {
+      id: imageId,
+      projectId: job.projectId,
+      origin: "ai",
+      filePath: stored.relativePath,
+      originalName: filename,
+      mimeType: result.mimeType,
+      sizeBytes: stored.sizeBytes,
+      checksumSha1: stored.checksumSha1,
+      widthPx: dims?.width ?? 0,
+      heightPx: dims?.height ?? 0,
+      caption: params.caption,
+      aiModel: result.model,
+      aiPrompt: params.prompt,
+    });
+    // Keep the mandatory credits section in step with the new AI image.
+    regenerateImageCredits(db, job.projectId, project.author);
+    appendChange(db, {
+      projectId: job.projectId,
+      what: `AI image generated (${result.model}) and added to the review grid`,
+      where: "stage 7 · images",
+      why: "author requested an AI-generated illustration",
+      authorizedBy: `job ${job.type} (${job.id})`,
+    });
+    markJobSucceeded(
+      db,
+      job.id,
+      { imageId, model: result.model, width: dims?.width ?? 0, height: dims?.height ?? 0 },
+      1,
+    );
+  })();
+};
+
 function escapeHtml(s: string): string {
   return s
     .replaceAll("&", "&amp;")
@@ -1066,6 +1241,7 @@ export const EXECUTORS: Record<string, Executor> = {
   generate_style_sample: generateStyleSampleExec,
   generate_master_text: generateMasterTextExec,
   propose_apparatus: proposeApparatusExec,
+  generate_image: generateImageExec,
   finalize_text: finalizeText,
   render_pdf: renderPdf,
   export_book: exportBook,

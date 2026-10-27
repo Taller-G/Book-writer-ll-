@@ -5,6 +5,7 @@ import { getFormatConfig, layoutHasBegun, listPdfVersions } from "@/lib/repo/out
 import { latestText } from "@/lib/repo/texts";
 import { JobPanel } from "../JobPanel";
 import { FormatWizard } from "./FormatWizard";
+import { ImagesPanel } from "./ImagesPanel";
 
 export function Stage7Format({ db, projectId }: { db: Db; projectId: string }) {
   const config = getFormatConfig(db, projectId);
@@ -31,6 +32,8 @@ export function Stage7Format({ db, projectId }: { db: Db; projectId: string }) {
         layoutStarted={layoutHasBegun(db, projectId)}
         updatedAt={config.updatedAt}
       />
+
+      <ImagesPanel db={db} projectId={projectId} />
 
       <div className="card">
         <h2>Typeset PDF</h2>

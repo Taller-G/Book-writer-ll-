@@ -17,6 +17,8 @@ export function createJob(
     type: string;
     retryOf?: string;
     attempt?: number;
+    /** Parameters the job needs at creation (e.g. an image prompt). */
+    params?: unknown;
   },
 ): Job {
   const id = newId();
@@ -28,6 +30,7 @@ export function createJob(
       type: input.type,
       retryOf: input.retryOf,
       attempt: input.attempt ?? 1,
+      ...(input.params !== undefined ? { input: JSON.stringify(input.params) } : {}),
       createdAt: now(),
     })
     .run();

@@ -57,8 +57,32 @@ export interface AiResponse {
   usage: AiUsage;
 }
 
+/** A request to generate an image from a text prompt (spec §4 Stage 6.4). */
+export interface AiImageRequest {
+  /** Project the spend is attributed to. */
+  projectId: string;
+  /** Job the call belongs to, when run from a stage job. */
+  jobId?: string;
+  /** The image description. */
+  prompt: string;
+  /** Optional model override; otherwise the app-configured image model. */
+  model?: string;
+}
+
+export interface AiImageResponse {
+  /** The generated image bytes. */
+  data: Buffer;
+  /** e.g. "image/png". */
+  mimeType: string;
+  /** Model that actually served the call. */
+  model: string;
+  usage: AiUsage;
+}
+
 export interface AiClient {
   complete(request: AiRequest): Promise<AiResponse>;
+  /** Generate an image through the same provider seam as text. */
+  generateImage(request: AiImageRequest): Promise<AiImageResponse>;
 }
 
 function safeParseExcerpts(json: string): string[] {
