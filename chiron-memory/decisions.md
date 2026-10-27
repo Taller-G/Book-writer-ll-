@@ -33,3 +33,15 @@ What: Stage-1 file uploads POST multipart FormData to /api/projects/[id]/sources
 ## Video ingests fully even without ffmpeg; audio extraction is best-effort
 
 What: Video uploads always store the original with checksum and duration; the audio track is extracted to derived/audio.m4a only when system ffmpeg exists, otherwise the source carries a visible note explaining it · Why: ffmpeg is a system dependency that may be absent — blocking the upload would lose the user's material, and the derived extraction can be redone later · Where: src/lib/ingest/ingest.ts (extractVideoAudio)
+
+## Spec stage 4 (master text) lives in pipeline stage 5, prose mode only
+
+What: The editorial-prose master-text flow (outline → sample → chunked generation → apparatus) replaces Stage 5's UI and jobs only when the contract mode is 'prose'; verbatim/hybrid keep the deterministic refine_pass_b. Its job types (propose_outline, generate_style_sample, generate_master_text, propose_apparatus) all run on stage number 5 and the generation writes passB · Why: the spec's stage numbering differs from the repo's 8 stages — repo stage 5 is the one that consumes the cleaned passA and produces the passB that review/format/export already consume, so the master text slots into the existing seam without renumbering · Where: src/app/projects/[id]/stages/[stage]/page.tsx (mode dispatch), src/lib/jobs/executors.ts · Learned: one pipeline stage can host several job types; use latestJobOfType (repo/jobs.ts), not latestJobForStage, to show each job's status independently
+
+## Apparatus assembled at finalize, never baked into passB
+
+What: Accepted apparatus sections are stored as rows and wrapped around the text (front + passB + back) by the finalize_text executor; proposed/discarded sections are simply excluded, and re-proposing never touches sections the user already decided · Why: baking apparatus into passB would make the text stale the moment the user discards a section; assembling at freeze time makes "discard without breaking the book" structural · Where: src/lib/repo/apparatus.ts, src/lib/jobs/executors.ts (finalizeText)
+
+## Normalization rules are per-project rows in two kinds, with pluggable language sets
+
+What: normalization_rules holds the project's visible/adjustable rule list, seeded from RULE_SETS (Spanish/RAE default, English equivalent proves pluggability); kind 'mechanical' rules run as deterministic post-processing transforms, kind 'prompt' rules are injected into the generation instructions for the model to apply while writing · Why: quotes/dashes/ellipsis are exact and auditable as regex passes (one change-log entry per rule), but italics-for-foreign-terms needs judgment only the model has · Where: src/lib/repo/normalization.ts (seeds), src/lib/master/normalize.ts (transforms + quote-balance check)

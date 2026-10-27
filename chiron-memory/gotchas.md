@@ -9,3 +9,11 @@ What: The OpenRouter client passes any provider-echoed text through redactSecret
 ## New columns on existing tables need the ALTER TABLE loop, not just the DDL
 
 What: bootstrap.ts creates tables with CREATE TABLE IF NOT EXISTS, so adding a column to the DDL does nothing for databases that already exist — new columns must also be added to the idempotent ALTER TABLE block (see addMissingSourceColumns) · Why: the stage-1 file columns silently would not exist in any pre-upgrade project DB otherwise · Where: src/lib/db/bootstrap.ts · Learned: in an additive-only schema, every new column ships in two places: the CREATE DDL and the pragma-guarded ALTER loop
+
+## Client-component state survives server revalidation — remount by key
+
+What: After a server action saves the outline and revalidates, OutlineEditor's useState (pending edits) survives because React preserves client-component state when only props change; the editor must be remounted via key={outline.updatedAt + status} to reset to server truth. Related: React StrictMode runs setState updater functions twice in dev, so side effects (recording an edit) must live outside the updater · Where: src/components/stages/Stage5MasterText.tsx, src/components/OutlineEditor.tsx · Learned: for form-like client widgets fed by server components, key them on the server row's updated_at
+
+## Playwright's dragTo cannot test HTML5 drag-and-drop
+
+What: browser dragTo performs mouse moves, which do not fire HTML5 dragstart/dragover/drop on draggable elements; to exercise the outline editor's drag reorder, dispatch DragEvent objects with a DataTransfer via page.evaluate · Where: src/components/OutlineEditor.tsx · Learned: keep drag logic in small handlers so a synthetic-event dispatch covers it
