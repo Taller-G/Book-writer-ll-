@@ -618,10 +618,15 @@ const refinePassB: Executor = async (handle, job) => {
       jobId: job.id,
     });
     for (const { p, i } of longOnes) {
+      // doubtfulText is the whole paragraph, so the dedupe key is stable across
+      // passes: once this paragraph is resolved "leave as is" it is never
+      // re-flagged, even though its index in the next pass may differ.
       addReviewItem(db, {
         projectId: job.projectId,
         itemType: "structure",
+        stageKey: "passB",
         excerpt: p.slice(0, 120) + "…",
+        doubtfulText: p,
         question: `Paragraph ${i + 1} runs ${p.split(/\s+/).length} words — split it?`,
       });
     }
@@ -1343,6 +1348,7 @@ const generateMasterTextExec: Executor = async (handle, job) => {
         addReviewItem(db, {
           projectId: job.projectId,
           itemType: "orthotypography",
+          stageKey: "passB",
           excerpt: "",
           question: `Quote-balance check failed: ${p}`,
         });

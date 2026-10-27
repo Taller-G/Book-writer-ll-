@@ -156,6 +156,11 @@ BEGIN
   SELECT RAISE(ABORT, 'change_log is append-only: deletes are not allowed');
 END;
 
+-- The review queue is the seam every doubt producer (audio doubts, reaction
+-- candidates, ambiguous questions, punctuation batches, low-dpi images) emits
+-- into. Rich fields below describe one human decision: the doubtful span with
+-- its validated context, A/B options, the audio anchor used to locate a clip
+-- (NOT the drifting raw timestamp), and how it was finally resolved.
 CREATE TABLE IF NOT EXISTS review_queue (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -166,7 +171,28 @@ CREATE TABLE IF NOT EXISTS review_queue (
     CHECK (status IN ('pending','accepted','rejected')),
   resolution_note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  resolved_at TEXT
+  resolved_at TEXT,
+  -- The doubtful span and the validated text around it, for the card.
+  context_before TEXT NOT NULL DEFAULT '',
+  doubtful_text TEXT NOT NULL DEFAULT '',
+  context_after TEXT NOT NULL DEFAULT '',
+  -- JSON array of resolution options [{id,label,value}] (option A / option B).
+  options TEXT NOT NULL DEFAULT '[]',
+  -- Which stage text the span lives in, so a resolution can be applied to it.
+  stage_key TEXT,
+  -- Audio-doubt locating: the source, the validated neighbouring text used as
+  -- the anchor, and the raw interpolated timestamp (unreliable, drifts ±30s).
+  source_id TEXT,
+  anchor_before TEXT NOT NULL DEFAULT '',
+  anchor_after TEXT NOT NULL DEFAULT '',
+  raw_timestamp REAL,
+  -- How it was resolved: option_a|option_b|leave_as_is|cut_sentence|free_text|
+  -- approve|reject (plus legacy accepted|rejected), and the applied value.
+  resolution TEXT,
+  resolution_value TEXT NOT NULL DEFAULT '',
+  -- Stable content fingerprint so a span resolved "leave as is" is never
+  -- flagged again in a later pass over the same text.
+  dedupe_key TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_review_queue_project ON review_queue(project_id);
 
@@ -423,6 +449,23 @@ const ADDED_COLUMNS: Record<string, Array<[name: string, type: string]>> = {
     ["qa", "TEXT NOT NULL DEFAULT '{}'"],
     ["diff", "TEXT NOT NULL DEFAULT '{}'"],
   ],
+  // Review-queue contract fields (unified inbox work order). Pre-existing items
+  // shipped with only excerpt/question/status; all new fields are nullable or
+  // defaulted so legacy rows keep working as plain accept/reject items.
+  review_queue: [
+    ["context_before", "TEXT NOT NULL DEFAULT ''"],
+    ["doubtful_text", "TEXT NOT NULL DEFAULT ''"],
+    ["context_after", "TEXT NOT NULL DEFAULT ''"],
+    ["options", "TEXT NOT NULL DEFAULT '[]'"],
+    ["stage_key", "TEXT"],
+    ["source_id", "TEXT"],
+    ["anchor_before", "TEXT NOT NULL DEFAULT ''"],
+    ["anchor_after", "TEXT NOT NULL DEFAULT ''"],
+    ["raw_timestamp", "REAL"],
+    ["resolution", "TEXT"],
+    ["resolution_value", "TEXT NOT NULL DEFAULT ''"],
+    ["dedupe_key", "TEXT NOT NULL DEFAULT ''"],
+  ],
 };
 
 function addMissingColumns(db: Database): void {
@@ -445,6 +488,11 @@ export function applyBootstrap(db: Database): void {
   db.pragma("foreign_keys = ON");
   db.exec(DDL);
   addMissingColumns(db);
+  // Index on dedupe_key must come after the column is added (legacy DBs get it
+  // via ALTER above; the DDL's CREATE TABLE IF NOT EXISTS skips existing ones).
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_review_queue_dedupe ON review_queue(project_id, dedupe_key)",
+  );
   // A server crash mid-job leaves 'running'/'queued' rows behind with no
   // worker attached. Surface them as failed-and-retryable instead of
   // forever-running.
