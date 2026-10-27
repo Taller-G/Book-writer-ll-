@@ -26,6 +26,18 @@ What: Every completed call records OpenRouter's usage.cost into ai_usage (the pr
 
 What: Uploaded files map onto the existing kind CHECK constraint (audio/video → 'audio', documents/text/images → 'document', promoted to 'transcript' when linked) while a new nullable media_type column records the true type (audio|video|document|image|text) · Why: the kind CHECK is baked into existing databases and cannot be widened additively; extracted text still lands in sources.content so the ingest_sources executor and all downstream stages work unchanged · Where: src/lib/db/schema.ts, src/lib/ingest/ingest.ts
 
+## Editorial contract = four versioned decisions, snapshot per change
+
+What: The Stage 2 contract holds four decisions — mode (verbatim/prose/hybrid), tone (neutral/literary_cinematic/academic/conversational), destination (personal/short_run/isbn/digital), authorship (own/third_party/mixed) plus rights notes and legal text; every save that changes a decision bumps editorial_contracts.version and snapshots the full row into contract_versions, while an identical re-save is a no-op · Why: the spec's "decisions made, do not re-discuss" document must be visible and versioned, and the no-op guard keeps version numbers meaningful · Where: src/lib/repo/editorial.ts (saveContract), src/lib/contract/definitions.ts
+
+## Legal text is a deterministic proposal, never overwriting user wording
+
+What: Declaring an authorship auto-fills legal_text from templates (copyright line with project author, third-party/mixed clauses, ISBN + legal-deposit placeholders when destination is isbn) ONLY when the field is empty; the third-party limitation warning is a pure function over authorship+destination · Why: the app cannot verify rights, so it proposes and warns — the user edits and owns the final wording · Where: src/lib/contract/definitions.ts (proposeLegalText, authorshipWarning)
+
+## Tone is chosen by comparing generated samples of the user's own material
+
+What: The tone_samples job (stage 2, 'large' role) rewrites the same excerpt of the latest raw text once per predefined tone and stores {excerpt, samples} in job.output; the editorial contract is deliberately NOT injected into those calls · Why: samples must come from the user's real material compared like-for-like, and the tone is exactly what is being decided, so injecting a (possibly unset) contract tone would bias the comparison · Where: src/lib/jobs/executors.ts (toneSamples, sampleExcerpt)
+
 ## Uploads go through a route handler, not a server action
 
 What: Stage-1 file uploads POST multipart FormData to /api/projects/[id]/sources instead of a 'use server' action · Why: server actions have a ~1 MB default body limit that audio/video uploads exceed, and a route handler can return per-file success/error JSON for the dropzone · Where: src/app/api/projects/[id]/sources/route.ts, src/components/SourceDropzone.tsx

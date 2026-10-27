@@ -26,6 +26,14 @@ What: ingestFile() validates (extension + magic bytes), checksums, stores the or
 
 What: After each ingest, an unlinked counterpart with the same normalized filename stem on the opposite side (audio/video vs document/text) is linked both ways in linked_source_id, and the text side's kind is promoted to 'transcript'; manual link/unlink server actions cover non-matching names · Why: enables later clip resolution between a talk's recording and its transcript · Where: src/lib/repo/sources.ts (findLinkCandidate, linkSources), src/lib/actions/content.ts
 
+## Contract mode is enforced inside the executors, not just the prompt
+
+What: cleanup_pass_a and refine_pass_b throw JobInputError without a signed contract and read its mode directly: verbatim blocks filler-word removal in Pass A (each kept candidate logged as "Kept filler … rewrites are blocked") and turns Pass B into an unchanged pass-through; every text/export job records contractVersion+contractMode in its input snapshot, and export_book renders the legal page, ISBN placeholder and color profile from the destination · Why: "faithful mode blocks rewrites" must hold structurally — an AI model ignoring the system prompt could not break the contract · Where: src/lib/jobs/executors.ts · Learned: enforce hard editorial rules in executor code and treat the injected prompt as a second layer, not the only one
+
+## Mid-project contract changes warn by naming the affected artifacts
+
+What: listDownstreamArtifacts() collects passA/passB/final stage_texts plus pdf_versions; the Stage 2 page shows them in a warning card whenever a signed contract exists, and saveContract appends a change_log entry naming each one when a revision happens after they exist · Why: changing the contract invalidates work produced under the previous version — the warning must be both on screen and on the permanent record · Where: src/lib/repo/editorial.ts, src/components/stages/Stage2Contract.tsx
+
 ## AI calls go through the AiClient seam, never a provider directly
 
 What: All AI-dependent slices call createAiClient(db).complete(request) where the request carries a SystemContext payload (task instructions + editorial contract + style profile) and a model role ('large' for writing/restructuring, 'fast' for mass classification); OpenRouter is the only implementation today and a direct Anthropic provider slots in behind the same interface · Why: spec §9 makes this the seam between the BYOK engine and every other work order — provider swaps must not touch stage code · Where: src/lib/ai/index.ts, src/lib/ai/types.ts
