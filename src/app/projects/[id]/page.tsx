@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { formatUsd } from "@/lib/ai/estimate";
 import { getDb } from "@/lib/db/client";
 import { getProjectOverview } from "@/lib/overview";
+import { getProjectSpend } from "@/lib/repo/aiUsage";
 import { STAGE_STATUS_LABELS } from "@/lib/stages";
 import { DeleteProjectButton } from "@/components/DeleteProjectButton";
 
@@ -13,8 +15,10 @@ export default async function ProjectOverviewPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const overview = getProjectOverview(getDb(), id);
+  const db = getDb();
+  const overview = getProjectOverview(db, id);
   if (!overview) notFound();
+  const aiSpend = getProjectSpend(db, id);
 
   const { project, stages, doneCount, resumeStage, nextAction } = overview;
 
@@ -54,7 +58,8 @@ export default async function ProjectOverviewPage({
         </p>
         <p className="muted">
           {overview.sourceCount} source(s) · {overview.changeCount} audit log
-          entries · {overview.pendingReviews} pending review(s)
+          entries · {overview.pendingReviews} pending review(s) ·{" "}
+          <span data-testid="ai-spend">AI spend: {formatUsd(aiSpend)}</span>
           {overview.latestJob &&
             ` · last job: ${overview.latestJob.type} (${overview.latestJob.status})`}
         </p>

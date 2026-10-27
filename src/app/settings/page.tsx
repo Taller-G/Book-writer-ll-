@@ -1,9 +1,6 @@
 import Link from "next/link";
-import {
-  clearApiKeyAction,
-  savePreferencesAction,
-  setApiKeyAction,
-} from "@/lib/actions/prefs";
+import { ApiKeyForm } from "@/components/ApiKeyForm";
+import { clearApiKeyAction, savePreferencesAction } from "@/lib/actions/prefs";
 import { getDb } from "@/lib/db/client";
 import { getPreferences, hasApiKey } from "@/lib/repo/prefs";
 
@@ -52,10 +49,12 @@ export default function SettingsPage() {
       </div>
 
       <div className="card">
-        <h2>Claude API key</h2>
+        <h2>OpenRouter API key</h2>
         <p className="muted">
-          Stored encrypted (AES-256-GCM) with a key that never leaves this
-          machine. Used by the AI-powered stages.
+          Paste your OpenRouter API key — it&apos;s the only technical setup
+          the app needs. The key is validated with a test call on save, stored
+          encrypted (AES-256-GCM) with a key that never leaves this machine,
+          and never shown again. Models are chosen by the app automatically.
         </p>
         {keySet ? (
           <div className="row">
@@ -65,12 +64,7 @@ export default function SettingsPage() {
             </form>
           </div>
         ) : (
-          <form action={setApiKeyAction} className="row">
-            <div className="grow">
-              <input type="password" name="apiKey" placeholder="sk-ant-…" required />
-            </div>
-            <button type="submit" className="primary">Save key</button>
-          </form>
+          <ApiKeyForm />
         )}
       </div>
     </div>

@@ -1,12 +1,16 @@
+import { getModelConfig } from "@/lib/ai/config";
+import { estimateCostUsd, estimateTokens, formatUsd } from "@/lib/ai/estimate";
 import type { Db } from "@/lib/db/client";
+import { getProjectSpend } from "@/lib/repo/aiUsage";
 import { listChanges } from "@/lib/repo/changeLog";
 import { latestJobForStage } from "@/lib/repo/jobs";
+import { hasApiKey } from "@/lib/repo/prefs";
 import { latestText } from "@/lib/repo/texts";
 import type { StageTextKey } from "@/lib/stages";
 import { JobPanel } from "../JobPanel";
 
 /** Shared body for the two text-pass stages (4: cleanup, 5: refine). */
-export function StageTextPass({
+export async function StageTextPass({
   db,
   projectId,
   stage,
@@ -29,6 +33,14 @@ export function StageTextPass({
   const output = latestText(db, projectId, outputKey);
   const latestJob = latestJobForStage(db, projectId, stage);
   const recentChanges = listChanges(db, projectId, 10);
+  const keySet = hasApiKey(db);
+  const spend = getProjectSpend(db, projectId);
+  // Pre-run cost estimate for this large operation, from the configured
+  // 'large' role's pricing (spec §9).
+  const estimate =
+    input && keySet
+      ? estimateCostUsd(await getModelConfig(), "large", input.content)
+      : undefined;
 
   return (
     <>
@@ -42,6 +54,14 @@ export function StageTextPass({
           </p>
         ) : (
           <p className="muted">No {inputKey} text yet — produce it in the earlier stage.</p>
+        )}
+        {input && estimate !== undefined && (
+          <p data-testid="cost-estimate">
+            Running this pass over {input.content.split(/\s+/).length} words (~
+            {estimateTokens(input.content)} tokens) will cost approx.{" "}
+            <strong>{formatUsd(estimate)}</strong>. AI spend on this project so
+            far: {formatUsd(spend)}.
+          </p>
         )}
         <JobPanel
           projectId={projectId}

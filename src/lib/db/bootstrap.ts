@@ -168,6 +168,21 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_project ON jobs(project_id);
 
+-- Per-call AI usage from OpenRouter's usage accounting; the project's
+-- cumulative spend counter is SUM(cost_usd) over these rows.
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  job_id TEXT,
+  role TEXT NOT NULL CHECK (role IN ('large','fast')),
+  model TEXT NOT NULL,
+  prompt_tokens INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_project ON ai_usage(project_id);
+
 -- Single-row user preferences, including the encrypted API key slot.
 CREATE TABLE IF NOT EXISTS user_prefs (
   id INTEGER PRIMARY KEY CHECK (id = 1),

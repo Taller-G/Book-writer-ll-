@@ -162,6 +162,18 @@ export const jobs = sqliteTable("jobs", {
   finishedAt: text("finished_at"),
 });
 
+export const aiUsage = sqliteTable("ai_usage", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  jobId: text("job_id"),
+  role: text("role", { enum: ["large", "fast"] }).notNull(),
+  model: text("model").notNull(),
+  promptTokens: integer("prompt_tokens").notNull().default(0),
+  completionTokens: integer("completion_tokens").notNull().default(0),
+  costUsd: real("cost_usd").notNull().default(0),
+  createdAt: text("created_at").notNull(),
+});
+
 export const userPrefs = sqliteTable("user_prefs", {
   id: integer("id").primaryKey(),
   preferences: text("preferences").notNull().default("{}"),
