@@ -155,6 +155,25 @@ export const reviewQueue = sqliteTable("review_queue", {
   resolutionNote: text("resolution_note").notNull().default(""),
   createdAt: text("created_at").notNull(),
   resolvedAt: text("resolved_at"),
+  // The doubtful span with the validated text around it (for the card).
+  contextBefore: text("context_before").notNull().default(""),
+  doubtfulText: text("doubtful_text").notNull().default(""),
+  contextAfter: text("context_after").notNull().default(""),
+  // JSON array of resolution options [{id,label,value}] (option A / option B).
+  options: text("options").notNull().default("[]"),
+  // Which stage text the span lives in, so a resolution applies to the text.
+  stageKey: text("stage_key"),
+  // Audio-doubt locating: source + validated-neighbour anchors + the
+  // unreliable raw timestamp (interpolated, drifts ±30s — never trusted alone).
+  sourceId: text("source_id"),
+  anchorBefore: text("anchor_before").notNull().default(""),
+  anchorAfter: text("anchor_after").notNull().default(""),
+  rawTimestamp: real("raw_timestamp"),
+  // How it was resolved, and the applied value (free text / chosen option).
+  resolution: text("resolution"),
+  resolutionValue: text("resolution_value").notNull().default(""),
+  // Stable fingerprint: a span resolved "leave as is" is never re-flagged.
+  dedupeKey: text("dedupe_key").notNull().default(""),
 });
 
 export const formatConfigs = sqliteTable("format_configs", {
