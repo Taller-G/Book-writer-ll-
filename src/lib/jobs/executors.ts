@@ -27,7 +27,15 @@ import {
 } from "../repo/editorial";
 import { markJobRunning, markJobSucceeded } from "../repo/jobs";
 import { ensureRules } from "../repo/normalization";
-import { getFormatConfig, insertPdfVersion, nextPdfVersion } from "../repo/output";
+import {
+  getFormatConfig,
+  insertPdfVersion,
+  latestPdfVersion,
+  nextPdfVersion,
+} from "../repo/output";
+import { parseFormatData } from "../format/config";
+import { computePreview } from "../preview/build";
+import { parsePages, serializePages } from "../preview/diff";
 import { getOutline, parseOutlineData, saveProposedOutline } from "../repo/outline";
 import { getProject } from "../repo/projects";
 import { addReviewItem, countPendingReviews } from "../repo/review";
@@ -470,6 +478,15 @@ const exportBook: Executor = async (handle, job) => {
     finalText.version,
   );
   await breathe();
+  // Lay the approved text into pages, run the QA suite and diff against the
+  // previous version, so the first export already feeds the preview viewer and
+  // the correction cycle's page-by-page diff from a single code path.
+  const previousPdf = latestPdfVersion(db, job.projectId);
+  const preview = computePreview(
+    finalText.content,
+    parseFormatData(format.data),
+    parsePages(previousPdf?.pages),
+  );
   const version = nextPdfVersion(db, job.projectId);
   const dir = path.join(dataDir(), "exports", job.projectId);
   fs.mkdirSync(dir, { recursive: true });
@@ -514,6 +531,12 @@ ${destination ? `<meta name="color-profile" content="${destination.colorProfile}
           ? `, destination ${destination.label} (${destination.colorProfile})`
           : ""),
       jobId: job.id,
+      pages: serializePages(preview.pages),
+      pageCount: preview.pageCount,
+      sourceTextVersion: finalText.version,
+      kind: "export",
+      qa: JSON.stringify(preview.qa),
+      diff: JSON.stringify(preview.diff),
     });
     appendChange(db, {
       projectId: job.projectId,

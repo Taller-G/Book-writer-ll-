@@ -12,7 +12,14 @@ import { AiAuthError } from "./errors";
 import { OpenRouterClient, type OpenRouterClientOptions } from "./openrouter";
 import type { AiClient, AiRequest, AiResponse } from "./types";
 
-export type { AiClient, AiRequest, AiResponse, SystemContext } from "./types";
+export type {
+  AiClient,
+  AiContentPart,
+  AiMessage,
+  AiRequest,
+  AiResponse,
+  SystemContext,
+} from "./types";
 export { buildSystemPrompt } from "./types";
 export {
   AiAuthError,

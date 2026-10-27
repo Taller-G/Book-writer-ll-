@@ -185,8 +185,46 @@ CREATE TABLE IF NOT EXISTS pdf_versions (
   notes TEXT NOT NULL DEFAULT '',
   job_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Preview/correction-cycle fields. pages is a JSON array of per-page text
+  -- (the deterministic paginator's output), enabling the spread viewer, the
+  -- page-by-page visual diff and the page count. qa/diff hold the QA-suite
+  -- result and the diff against the previous version computed at build time.
+  pages TEXT NOT NULL DEFAULT '[]',
+  page_count INTEGER NOT NULL DEFAULT 0,
+  source_text_version INTEGER,
+  kind TEXT NOT NULL DEFAULT 'export'
+    CHECK (kind IN ('export','preview','rollback')),
+  -- When kind = 'rollback', the earlier version this one restored exactly.
+  rolled_back_from INTEGER,
+  qa TEXT NOT NULL DEFAULT '{}',
+  diff TEXT NOT NULL DEFAULT '{}',
   UNIQUE (project_id, version)
 );
+
+-- Persistent correction-cycle conversation, one thread per project. Each user
+-- message may carry an annotation (page_number + region + a marked-region
+-- image) or an attached screenshot. The agent classifies every request as a
+-- content change (reopens the closed master text, needs explicit confirmation)
+-- or a layout change (adjusts the template). Every applied change is also
+-- recorded in the append-only change_log.
+CREATE TABLE IF NOT EXISTS correction_messages (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('user','agent')),
+  body TEXT NOT NULL DEFAULT '',
+  page_number INTEGER,
+  region TEXT,
+  image TEXT,
+  classification TEXT CHECK (classification IN ('content','layout')),
+  status TEXT NOT NULL DEFAULT 'open'
+    CHECK (status IN ('open','awaiting_confirmation','applied','rejected','answered')),
+  pdf_version INTEGER,
+  target_ref TEXT,
+  proposal TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_correction_messages_project
+  ON correction_messages(project_id);
 
 CREATE TABLE IF NOT EXISTS covers (
   id TEXT PRIMARY KEY,
@@ -353,6 +391,18 @@ const ADDED_COLUMNS: Record<string, Array<[name: string, type: string]>> = {
   ],
   stage_texts: [["style_profile_version", "INTEGER"]],
   ai_usage: [["system_prompt", "TEXT NOT NULL DEFAULT ''"]],
+  // Preview / correction-cycle fields added to the pre-existing pdf_versions
+  // table. CHECK constraints can't be added by ALTER TABLE, so `kind` is a
+  // plain TEXT column here (the repo only ever writes the three valid values).
+  pdf_versions: [
+    ["pages", "TEXT NOT NULL DEFAULT '[]'"],
+    ["page_count", "INTEGER NOT NULL DEFAULT 0"],
+    ["source_text_version", "INTEGER"],
+    ["kind", "TEXT NOT NULL DEFAULT 'export'"],
+    ["rolled_back_from", "INTEGER"],
+    ["qa", "TEXT NOT NULL DEFAULT '{}'"],
+    ["diff", "TEXT NOT NULL DEFAULT '{}'"],
+  ],
 };
 
 function addMissingColumns(db: Database): void {
