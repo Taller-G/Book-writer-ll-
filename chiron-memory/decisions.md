@@ -26,6 +26,18 @@ What: Every completed call records OpenRouter's usage.cost into ai_usage (the pr
 
 What: Uploaded files map onto the existing kind CHECK constraint (audio/video → 'audio', documents/text/images → 'document', promoted to 'transcript' when linked) while a new nullable media_type column records the true type (audio|video|document|image|text) · Why: the kind CHECK is baked into existing databases and cannot be widened additively; extracted text still lands in sources.content so the ingest_sources executor and all downstream stages work unchanged · Where: src/lib/db/schema.ts, src/lib/ingest/ingest.ts
 
+## Editorial contract = four versioned decisions, snapshot per change
+
+What: The Stage 2 contract holds four decisions — mode (verbatim/prose/hybrid), tone (neutral/literary_cinematic/academic/conversational), destination (personal/short_run/isbn/digital), authorship (own/third_party/mixed) plus rights notes and legal text; every save that changes a decision bumps editorial_contracts.version and snapshots the full row into contract_versions, while an identical re-save is a no-op · Why: the spec's "decisions made, do not re-discuss" document must be visible and versioned, and the no-op guard keeps version numbers meaningful · Where: src/lib/repo/editorial.ts (saveContract), src/lib/contract/definitions.ts
+
+## Legal text is a deterministic proposal, never overwriting user wording
+
+What: Declaring an authorship auto-fills legal_text from templates (copyright line with project author, third-party/mixed clauses, ISBN + legal-deposit placeholders when destination is isbn) ONLY when the field is empty; the third-party limitation warning is a pure function over authorship+destination · Why: the app cannot verify rights, so it proposes and warns — the user edits and owns the final wording · Where: src/lib/contract/definitions.ts (proposeLegalText, authorshipWarning)
+
+## Tone is chosen by comparing generated samples of the user's own material
+
+What: The tone_samples job (stage 2, 'large' role) rewrites the same excerpt of the latest raw text once per predefined tone and stores {excerpt, samples} in job.output; the editorial contract is deliberately NOT injected into those calls · Why: samples must come from the user's real material compared like-for-like, and the tone is exactly what is being decided, so injecting a (possibly unset) contract tone would bias the comparison · Where: src/lib/jobs/executors.ts (toneSamples, sampleExcerpt)
+
 ## Uploads go through a route handler, not a server action
 
 What: Stage-1 file uploads POST multipart FormData to /api/projects/[id]/sources instead of a 'use server' action · Why: server actions have a ~1 MB default body limit that audio/video uploads exceed, and a route handler can return per-file success/error JSON for the dropzone · Where: src/app/api/projects/[id]/sources/route.ts, src/components/SourceDropzone.tsx
@@ -41,3 +53,21 @@ What: getFormatConfig seeds a missing format_configs row with PROVEN_DEFAULTS (A
 ## Layout "has begun" means an export job or export version exists
 
 What: layoutHasBegun(db, projectId) is true when the project has any export_book job (even failed) or any pdf_versions row; the Format wizard then shows an explicit re-iteration-cost warning if the user picks a different page size than the saved one · Why: changing page size after layout re-flows the whole book — the real project's 12×18→A5 migration cost a full revision cycle, and this is the earliest signal the app has that layout work started · Where: src/lib/repo/output.ts (layoutHasBegun), src/components/stages/FormatWizard.tsx (page-size-warning)
+## Spec stage 4 (master text) lives in pipeline stage 5, prose mode only
+
+What: The editorial-prose master-text flow (outline → sample → chunked generation → apparatus) replaces Stage 5's UI and jobs only when the contract mode is 'prose'; verbatim/hybrid keep the deterministic refine_pass_b. Its job types (propose_outline, generate_style_sample, generate_master_text, propose_apparatus) all run on stage number 5 and the generation writes passB · Why: the spec's stage numbering differs from the repo's 8 stages — repo stage 5 is the one that consumes the cleaned passA and produces the passB that review/format/export already consume, so the master text slots into the existing seam without renumbering · Where: src/app/projects/[id]/stages/[stage]/page.tsx (mode dispatch), src/lib/jobs/executors.ts · Learned: one pipeline stage can host several job types; use latestJobOfType (repo/jobs.ts), not latestJobForStage, to show each job's status independently
+
+## Apparatus assembled at finalize, never baked into passB
+
+What: Accepted apparatus sections are stored as rows and wrapped around the text (front + passB + back) by the finalize_text executor; proposed/discarded sections are simply excluded, and re-proposing never touches sections the user already decided · Why: baking apparatus into passB would make the text stale the moment the user discards a section; assembling at freeze time makes "discard without breaking the book" structural · Where: src/lib/repo/apparatus.ts, src/lib/jobs/executors.ts (finalizeText)
+
+## Normalization rules are per-project rows in two kinds, with pluggable language sets
+
+What: normalization_rules holds the project's visible/adjustable rule list, seeded from RULE_SETS (Spanish/RAE default, English equivalent proves pluggability); kind 'mechanical' rules run as deterministic post-processing transforms, kind 'prompt' rules are injected into the generation instructions for the model to apply while writing · Why: quotes/dashes/ellipsis are exact and auditable as regex passes (one change-log entry per rule), but italics-for-foreign-terms needs judgment only the model has · Where: src/lib/repo/normalization.ts (seeds), src/lib/master/normalize.ts (transforms + quote-balance check)
+## Style references keep extracted text only, not immutable originals
+
+What: Stage-3 reference files (txt/md/pdf/docx) are stored as extracted text in the style_refs table via addStyleReference(); unreadable, empty, or non-text files return a per-file error and save nothing — unlike Stage-1 sources there is no original/ file tree · Why: references are inputs to the style profile, not book material under the spec's trust model, so checksummed immutable originals would be dead weight; the no-partial-state rule still applies (a failed reference must never leave a silent partial profile) · Where: src/lib/ingest/styleRef.ts, src/app/api/projects/[id]/style-refs/route.ts
+
+## Profile extraction demands strict JSON and fails loudly on shortfall
+
+What: The extract_style executor calls the 'large' role with system.bare and parses the response as strict JSON (8 trait fields + 3-5 verbatim excerpts); unparseable or incomplete output (fewer than 4 traits or zero excerpts) throws, failing the job with a clear error and writing NO profile · Why: the spec forbids a silent partial profile — a failed extraction must be visibly retryable, never half-saved · Where: src/lib/jobs/executors.ts (parseProfileJson, extractStyle)

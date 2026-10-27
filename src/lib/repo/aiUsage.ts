@@ -16,6 +16,8 @@ export interface AiUsageInput {
   promptTokens: number;
   completionTokens: number;
   costUsd: number;
+  /** Exact system prompt sent with the call, so injection is verifiable. */
+  systemPrompt: string;
 }
 
 export function recordAiUsage(db: Db, input: AiUsageInput): void {

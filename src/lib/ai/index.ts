@@ -5,11 +5,12 @@
 
 import type { Db } from "../db/client";
 import { recordAiUsage } from "../repo/aiUsage";
+import { getConfirmedStyleProfile, getContract } from "../repo/editorial";
 import { getApiKey } from "../repo/prefs";
 import { getModelConfig } from "./config";
 import { AiAuthError } from "./errors";
 import { OpenRouterClient, type OpenRouterClientOptions } from "./openrouter";
-import type { AiClient } from "./types";
+import type { AiClient, AiRequest, AiResponse } from "./types";
 
 export type { AiClient, AiRequest, AiResponse, SystemContext } from "./types";
 export { buildSystemPrompt } from "./types";
@@ -23,10 +24,41 @@ export {
 export type { ModelRole } from "./config";
 
 /**
+ * Injects the project's editorial contract and CONFIRMED style profile into
+ * every call's system context, loaded fresh from the database by projectId.
+ * The guarantee is structural: consistency never depends on the caller (or a
+ * long conversation) remembering — a project resumed weeks later injects the
+ * identical profile because it is read from disk on every single call.
+ * Callers may still pass explicit values (kept as-is), and `system.bare`
+ * opts out entirely (profile extraction only).
+ */
+class ProjectContextClient implements AiClient {
+  constructor(
+    private readonly inner: AiClient,
+    private readonly db: Db,
+  ) {}
+
+  complete(request: AiRequest): Promise<AiResponse> {
+    if (request.system.bare) return this.inner.complete(request);
+    const system = {
+      ...request.system,
+      contract:
+        request.system.contract ?? getContract(this.db, request.projectId),
+      styleProfile:
+        request.system.styleProfile ??
+        getConfirmedStyleProfile(this.db, request.projectId),
+    };
+    return this.inner.complete({ ...request, system });
+  }
+}
+
+/**
  * Build the AI client from the encrypted key in user_prefs. Throws AiAuthError
  * when no key is configured — callers surface that as "add your key in
  * Settings". Only OpenRouter exists today; a direct Anthropic (or other)
- * provider slots in behind the same AiClient interface.
+ * provider slots in behind the same AiClient interface. The returned client
+ * always wraps the provider in ProjectContextClient, so every call carries
+ * the project's contract and confirmed style profile.
  */
 export function createAiClient(
   db: Db,
@@ -40,10 +72,11 @@ export function createAiClient(
       "No OpenRouter API key configured. Paste your key in Settings first.",
     );
   }
-  return new OpenRouterClient({
+  const provider = new OpenRouterClient({
     apiKey,
     getConfig: () => getModelConfig(),
     onUsage: (record) => recordAiUsage(db, record),
     ...overrides,
   });
+  return new ProjectContextClient(provider, db);
 }

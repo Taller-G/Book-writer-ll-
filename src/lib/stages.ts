@@ -33,8 +33,9 @@ export const STAGES: StageDef[] = [
     title: "Editorial contract",
     short: "Decide how faithful the text stays",
     description:
-      "Choose the editorial mode — verbatim, prose, or hybrid — and write down " +
-      "the rules. Every later change is judged against this contract.",
+      "Answer the four decisions — mode, tone, destination, authorship — and " +
+      "sign the contract. Every later change is judged against it.",
+    jobType: "tone_samples",
   },
   {
     num: 3,
@@ -42,8 +43,9 @@ export const STAGES: StageDef[] = [
     title: "Style profile",
     short: "Capture the voice",
     description:
-      "Define tone, register and narrative person so cleanup and refinement " +
-      "preserve the author's voice instead of flattening it.",
+      "Attach reference texts and let the AI propose the voice — or write it " +
+      "yourself — then confirm it. The confirmed profile is injected into " +
+      "every AI call in every later stage.",
   },
   {
     num: 4,

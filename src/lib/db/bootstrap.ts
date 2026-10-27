@@ -51,7 +51,25 @@ CREATE TABLE IF NOT EXISTS editorial_contracts (
   mode TEXT NOT NULL CHECK (mode IN ('verbatim','prose','hybrid')),
   rules TEXT NOT NULL DEFAULT '',
   notes TEXT NOT NULL DEFAULT '',
-  signed_at TEXT
+  signed_at TEXT,
+  -- Stage 2 decisions (nullable: pre-existing contracts answered only "mode").
+  tone TEXT,
+  destination TEXT,
+  authorship TEXT,
+  rights_notes TEXT NOT NULL DEFAULT '',
+  legal_text TEXT NOT NULL DEFAULT '',
+  version INTEGER NOT NULL DEFAULT 1
+);
+
+-- Immutable snapshot per contract version: the "decisions made, do not
+-- re-discuss" history every later stage can point back to.
+CREATE TABLE IF NOT EXISTS contract_versions (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  snapshot TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (project_id, version)
 );
 
 CREATE TABLE IF NOT EXISTS style_profiles (
@@ -61,8 +79,34 @@ CREATE TABLE IF NOT EXISTS style_profiles (
   person TEXT NOT NULL DEFAULT '',
   notes TEXT NOT NULL DEFAULT '',
   data TEXT NOT NULL DEFAULT '{}',
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Extracted trait fields, shown in plain language for the user to adjust.
+  voice TEXT NOT NULL DEFAULT '',
+  rhythm TEXT NOT NULL DEFAULT '',
+  punctuation TEXT NOT NULL DEFAULT '',
+  metaphors TEXT NOT NULL DEFAULT '',
+  openings TEXT NOT NULL DEFAULT '',
+  -- JSON array of 3-5 verbatim few-shot excerpts from the reference texts.
+  excerpts TEXT NOT NULL DEFAULT '[]',
+  -- A draft (fresh extraction) shapes nothing until the user confirms it.
+  status TEXT NOT NULL DEFAULT 'confirmed' CHECK (status IN ('draft','confirmed')),
+  version INTEGER NOT NULL DEFAULT 1,
+  confirmed_at TEXT,
+  sample TEXT NOT NULL DEFAULT ''
 );
+
+-- Reference files attached for style extraction (an author's chapters, the
+-- user's own writing, a house style). Extracted text only: these are inputs
+-- to the profile, not book material.
+CREATE TABLE IF NOT EXISTS style_refs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  content TEXT NOT NULL,
+  word_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_style_refs_project ON style_refs(project_id);
 
 -- Versioned text snapshots per pipeline stage: raw -> passA -> passB -> final.
 CREATE TABLE IF NOT EXISTS stage_texts (
@@ -73,6 +117,10 @@ CREATE TABLE IF NOT EXISTS stage_texts (
   content TEXT NOT NULL,
   job_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Confirmed style profile version in force when this text was produced;
+  -- NULL when no profile existed yet. Drives the regenerate/keep offer after
+  -- a mid-project profile change.
+  style_profile_version INTEGER,
   UNIQUE (project_id, stage_key, version)
 );
 
@@ -160,6 +208,58 @@ CREATE TABLE IF NOT EXISTS checklist_items (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Stage 5 master text (editorial prose mode): the proposed/confirmed book
+-- structure. One row per project; the chapters live in the data JSON so the
+-- outline editor can reorder/rename/merge atomically.
+CREATE TABLE IF NOT EXISTS outlines (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','confirmed')),
+  data TEXT NOT NULL DEFAULT '{}',
+  job_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Orthotypographic normalization rules, per project. Seeded from a language
+-- rule set (Spanish/RAE by default); 'mechanical' rules run as deterministic
+-- post-processing, 'prompt' rules are injected into generation instructions.
+CREATE TABLE IF NOT EXISTS normalization_rules (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  language TEXT NOT NULL DEFAULT 'es',
+  rule_key TEXT NOT NULL,
+  label TEXT NOT NULL,
+  explanation TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL CHECK (kind IN ('mechanical','prompt')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  position INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (project_id, rule_key)
+);
+CREATE INDEX IF NOT EXISTS idx_normalization_rules_project
+  ON normalization_rules(project_id);
+
+-- Editorial apparatus sections (spec §6): proposed by AI with a plain-language
+-- explanation; the user accepts, edits or discards each one individually.
+-- Only accepted sections are assembled around the text at finalize.
+CREATE TABLE IF NOT EXISTS apparatus_sections (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  section_key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  explanation TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  placement TEXT NOT NULL CHECK (placement IN ('front','back')),
+  status TEXT NOT NULL DEFAULT 'proposed'
+    CHECK (status IN ('proposed','accepted','discarded')),
+  position INTEGER NOT NULL DEFAULT 0,
+  job_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (project_id, section_key)
+);
+CREATE INDEX IF NOT EXISTS idx_apparatus_sections_project
+  ON apparatus_sections(project_id);
+
 -- Async stage jobs: versioned input/output, visible status, retryable.
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
@@ -192,6 +292,9 @@ CREATE TABLE IF NOT EXISTS ai_usage (
   prompt_tokens INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
   cost_usd REAL NOT NULL DEFAULT 0,
+  -- Full system prompt sent with the call, so the call log is verifiable:
+  -- the injected contract, style profile and excerpts are checkable per call.
+  system_prompt TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_ai_usage_project ON ai_usage(project_id);
@@ -211,28 +314,58 @@ INSERT OR IGNORE INTO user_prefs (id) VALUES (1);
 // Columns added after first release. CREATE TABLE IF NOT EXISTS skips
 // existing databases, so new columns must also be applied via ALTER TABLE,
 // guarded by a pragma check to stay idempotent.
-const SOURCE_FILE_COLUMNS: Array<[name: string, type: string]> = [
-  ["media_type", "TEXT"],
-  ["original_name", "TEXT"],
-  ["original_path", "TEXT"],
-  ["mime_type", "TEXT"],
-  ["size_bytes", "INTEGER"],
-  ["checksum_sha1", "TEXT"],
-  ["duration_seconds", "REAL"],
-  ["language", "TEXT"],
-  ["word_count", "INTEGER"],
-  ["linked_source_id", "TEXT"],
-];
+const ADDED_COLUMNS: Record<string, Array<[name: string, type: string]>> = {
+  sources: [
+    ["media_type", "TEXT"],
+    ["original_name", "TEXT"],
+    ["original_path", "TEXT"],
+    ["mime_type", "TEXT"],
+    ["size_bytes", "INTEGER"],
+    ["checksum_sha1", "TEXT"],
+    ["duration_seconds", "REAL"],
+    ["language", "TEXT"],
+    ["word_count", "INTEGER"],
+    ["linked_source_id", "TEXT"],
+  ],
+  // Existing manually-saved profiles count as confirmed v1.
+  style_profiles: [
+    ["voice", "TEXT NOT NULL DEFAULT ''"],
+    ["rhythm", "TEXT NOT NULL DEFAULT ''"],
+    ["punctuation", "TEXT NOT NULL DEFAULT ''"],
+    ["metaphors", "TEXT NOT NULL DEFAULT ''"],
+    ["openings", "TEXT NOT NULL DEFAULT ''"],
+    ["excerpts", "TEXT NOT NULL DEFAULT '[]'"],
+    ["status", "TEXT NOT NULL DEFAULT 'confirmed'"],
+    ["version", "INTEGER NOT NULL DEFAULT 1"],
+    ["confirmed_at", "TEXT"],
+    ["sample", "TEXT NOT NULL DEFAULT ''"],
+  ],
+  // Stage 2 decision columns, added after the editorial_contracts table
+  // shipped with only mode/rules/notes (nullable: pre-existing contracts
+  // answered only "mode").
+  editorial_contracts: [
+    ["tone", "TEXT"],
+    ["destination", "TEXT"],
+    ["authorship", "TEXT"],
+    ["rights_notes", "TEXT NOT NULL DEFAULT ''"],
+    ["legal_text", "TEXT NOT NULL DEFAULT ''"],
+    ["version", "INTEGER NOT NULL DEFAULT 1"],
+  ],
+  stage_texts: [["style_profile_version", "INTEGER"]],
+  ai_usage: [["system_prompt", "TEXT NOT NULL DEFAULT ''"]],
+};
 
-function addMissingSourceColumns(db: Database): void {
-  const existing = new Set(
-    (db.pragma("table_info(sources)") as Array<{ name: string }>).map(
-      (c) => c.name,
-    ),
-  );
-  for (const [name, type] of SOURCE_FILE_COLUMNS) {
-    if (!existing.has(name)) {
-      db.exec(`ALTER TABLE sources ADD COLUMN ${name} ${type}`);
+function addMissingColumns(db: Database): void {
+  for (const [table, columns] of Object.entries(ADDED_COLUMNS)) {
+    const existing = new Set(
+      (db.pragma(`table_info(${table})`) as Array<{ name: string }>).map(
+        (c) => c.name,
+      ),
+    );
+    for (const [name, type] of columns) {
+      if (!existing.has(name)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+      }
     }
   }
 }
@@ -241,7 +374,7 @@ export function applyBootstrap(db: Database): void {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(DDL);
-  addMissingSourceColumns(db);
+  addMissingColumns(db);
   // A server crash mid-job leaves 'running'/'queued' rows behind with no
   // worker attached. Surface them as failed-and-retryable instead of
   // forever-running.

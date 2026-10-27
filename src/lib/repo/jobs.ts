@@ -61,6 +61,22 @@ export function latestJobForStage(
     .get();
 }
 
+/** Latest attempt of one job type — stages that run several job types
+ *  (master-text stage) need the status of each independently. */
+export function latestJobOfType(
+  db: Db,
+  projectId: string,
+  type: string,
+): Job | undefined {
+  return db
+    .select()
+    .from(jobs)
+    .where(and(eq(jobs.projectId, projectId), eq(jobs.type, type)))
+    .orderBy(desc(jobs.createdAt))
+    .limit(1)
+    .get();
+}
+
 export function markJobRunning(
   db: Db,
   id: string,

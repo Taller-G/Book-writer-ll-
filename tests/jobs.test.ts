@@ -3,6 +3,7 @@ import { openDatabase, type DbHandle } from "@/lib/db/client";
 import { enqueueAndRun, retryJob } from "@/lib/jobs/runner";
 import { listJobs } from "@/lib/repo/jobs";
 import { createProject } from "@/lib/repo/projects";
+import { saveContract } from "@/lib/repo/editorial";
 import { addReviewItem, resolveReviewItem, listReviewItems } from "@/lib/repo/review";
 import { addSource } from "@/lib/repo/sources";
 import { insertText, latestText, listTextVersions } from "@/lib/repo/texts";
@@ -124,6 +125,12 @@ describe("stage job orchestration", () => {
   });
 
   it("cleanup pass records what/where/why in the change log", async () => {
+    saveContract(handle.db, {
+      projectId,
+      mode: "prose",
+      rules: "",
+      notes: "",
+    });
     insertText(handle.db, {
       projectId,
       stageKey: "raw",
