@@ -29,3 +29,15 @@ What: After each ingest, an unlinked counterpart with the same normalized filena
 ## AI calls go through the AiClient seam, never a provider directly
 
 What: All AI-dependent slices call createAiClient(db).complete(request) where the request carries a SystemContext payload (task instructions + editorial contract + style profile) and a model role ('large' for writing/restructuring, 'fast' for mass classification); OpenRouter is the only implementation today and a direct Anthropic provider slots in behind the same interface · Why: spec §9 makes this the seam between the BYOK engine and every other work order — provider swaps must not touch stage code · Where: src/lib/ai/index.ts, src/lib/ai/types.ts
+
+## Style profile lifecycle: draft vs confirmed, versioned on confirm
+
+What: style_profiles has status ('draft'|'confirmed') and version — extraction (extract_style job) saves a DRAFT that shapes nothing; confirmStyleProfile() sets status='confirmed' and bumps version only when confirmed_at already existed (first confirm is v1); the stage-3 gate requires a confirmed profile · Why: the spec requires the user to review/adjust the extracted profile before it is applied to everything, and the version bump is what marks downstream texts as written under an older voice · Where: src/lib/repo/editorial.ts, src/lib/gates.ts
+
+## Every AI call auto-injects contract + confirmed profile, logged verbatim
+
+What: createAiClient() wraps the provider in ProjectContextClient, which on every complete() loads the editorial contract and the CONFIRMED style profile (with its few-shot excerpts) from the DB by request.projectId and fills any missing SystemContext fields; `system.bare` opts out (used only by profile extraction); the exact rendered system prompt is stored per call in ai_usage.system_prompt · Why: voice consistency must be structural, never dependent on callers or conversation memory — a project reopened weeks later injects the identical profile because it is read from disk per call, and the call log makes that verifiable · Where: src/lib/ai/index.ts (ProjectContextClient), src/lib/ai/types.ts (buildSystemPrompt), src/lib/repo/aiUsage.ts · Learned: make cross-cutting invariants hold at the seam (client factory), not at each call site
+
+## Stage texts are stamped with the profile version that produced them
+
+What: insertText() automatically stamps stage_texts.style_profile_version with the current confirmed profile version (NULL when none); textsUnderOldProfile() returns the latest passA/passB/final texts whose stamp differs from the current version, feeding the regenerate/keep panel on Stage 3 · Why: a mid-project profile change must list exactly which texts carry the previous voice; regenerating re-runs the producing job (new stamped text), keeping stamps the existing row via stampTextProfileVersion() plus an audit entry · Where: src/lib/repo/texts.ts, src/components/stages/ProfileChangePanel.tsx, src/lib/actions/content.ts (keepTextProfileAction)

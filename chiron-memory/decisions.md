@@ -33,3 +33,11 @@ What: Stage-1 file uploads POST multipart FormData to /api/projects/[id]/sources
 ## Video ingests fully even without ffmpeg; audio extraction is best-effort
 
 What: Video uploads always store the original with checksum and duration; the audio track is extracted to derived/audio.m4a only when system ffmpeg exists, otherwise the source carries a visible note explaining it · Why: ffmpeg is a system dependency that may be absent — blocking the upload would lose the user's material, and the derived extraction can be redone later · Where: src/lib/ingest/ingest.ts (extractVideoAudio)
+
+## Style references keep extracted text only, not immutable originals
+
+What: Stage-3 reference files (txt/md/pdf/docx) are stored as extracted text in the style_refs table via addStyleReference(); unreadable, empty, or non-text files return a per-file error and save nothing — unlike Stage-1 sources there is no original/ file tree · Why: references are inputs to the style profile, not book material under the spec's trust model, so checksummed immutable originals would be dead weight; the no-partial-state rule still applies (a failed reference must never leave a silent partial profile) · Where: src/lib/ingest/styleRef.ts, src/app/api/projects/[id]/style-refs/route.ts
+
+## Profile extraction demands strict JSON and fails loudly on shortfall
+
+What: The extract_style executor calls the 'large' role with system.bare and parses the response as strict JSON (8 trait fields + 3-5 verbatim excerpts); unparseable or incomplete output (fewer than 4 traits or zero excerpts) throws, failing the job with a clear error and writing NO profile · Why: the spec forbids a silent partial profile — a failed extraction must be visibly retryable, never half-saved · Where: src/lib/jobs/executors.ts (parseProfileJson, extractStyle)
