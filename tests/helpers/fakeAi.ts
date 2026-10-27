@@ -1,6 +1,7 @@
 import type { AiClient, AiRequest, AiResponse } from "@/lib/ai";
 import type { DbHandle } from "@/lib/db/client";
-import { saveContract, saveStyleProfile } from "@/lib/repo/editorial";
+import type { EditorialContract, StyleProfile } from "@/lib/db/schema";
+import { confirmStyleProfile, saveContract } from "@/lib/repo/editorial";
 import { createProject } from "@/lib/repo/projects";
 import { insertText } from "@/lib/repo/texts";
 
@@ -23,7 +24,8 @@ export class FakeAiClient implements AiClient {
   }
 }
 
-/** A project ready for the master-text stage: prose contract, style, passA. */
+/** A project ready for the master-text stage: prose contract, CONFIRMED
+ *  style profile, passA. */
 export function seedProseProject(
   handle: DbHandle,
   passAContent: string,
@@ -35,12 +37,17 @@ export function seedProseProject(
     rules: "Mantener las historias; quitar muletillas.",
     notes: "",
   });
-  saveStyleProfile(handle.db, {
-    projectId,
+  confirmStyleProfile(handle.db, projectId, {
     tone: "cálido y directo",
     register: "conversacional",
     person: "primera persona",
     notes: "Nunca usar jerga corporativa.",
+    voice: "la del autor hablando a un amigo",
+    rhythm: "frases cortas",
+    punctuation: "",
+    metaphors: "ejemplos cotidianos",
+    openings: "",
+    excerpts: ["Lo importante es la mesa compartida."],
   });
   insertText(handle.db, {
     projectId,
@@ -49,6 +56,45 @@ export function seedProseProject(
     content: passAContent,
   });
   return projectId;
+}
+
+/** Full typed contract/profile literals for calling engine functions directly. */
+export function testContract(projectId: string): EditorialContract {
+  return {
+    projectId,
+    mode: "prose",
+    rules: "",
+    notes: "",
+    signedAt: null,
+    tone: null,
+    destination: null,
+    authorship: null,
+    rightsNotes: "",
+    legalText: "",
+    version: 1,
+  };
+}
+
+export function testStyleProfile(projectId: string): StyleProfile {
+  return {
+    projectId,
+    tone: "cálido y directo",
+    register: "conversacional",
+    person: "primera",
+    notes: "",
+    data: "{}",
+    updatedAt: "",
+    voice: "",
+    rhythm: "",
+    punctuation: "",
+    metaphors: "",
+    openings: "",
+    excerpts: "[]",
+    status: "confirmed",
+    version: 1,
+    confirmedAt: null,
+    sample: "",
+  };
 }
 
 /** Six-paragraph cleaned material used across the master-text tests. */

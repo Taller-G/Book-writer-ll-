@@ -1,5 +1,5 @@
 import type { Db } from "./db/client";
-import { getContract, getStyleProfile } from "./repo/editorial";
+import { getConfirmedStyleProfile, getContract } from "./repo/editorial";
 import { listChecklist, listPdfVersions } from "./repo/output";
 import { countPendingReviews } from "./repo/review";
 import { latestText } from "./repo/texts";
@@ -20,14 +20,26 @@ export function canCompleteStage(
       return latestText(db, projectId, "raw")
         ? { ok: true }
         : { ok: false, reason: "Compile your sources into the raw text first." };
-    case 2:
-      return getContract(db, projectId)
+    case 2: {
+      const contract = getContract(db, projectId);
+      if (!contract)
+        return { ok: false, reason: "Sign the editorial contract first." };
+      const open = [
+        !contract.tone && "tone",
+        !contract.destination && "destination",
+        !contract.authorship && "authorship",
+      ].filter(Boolean);
+      return open.length === 0
         ? { ok: true }
-        : { ok: false, reason: "Sign the editorial contract first." };
+        : {
+            ok: false,
+            reason: `Answer the remaining contract question(s): ${open.join(", ")}.`,
+          };
+    }
     case 3:
-      return getStyleProfile(db, projectId)
+      return getConfirmedStyleProfile(db, projectId)
         ? { ok: true }
-        : { ok: false, reason: "Save the style profile first." };
+        : { ok: false, reason: "Confirm the style profile first." };
     case 4:
       return latestText(db, projectId, "passA")
         ? { ok: true }

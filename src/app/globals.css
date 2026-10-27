@@ -260,6 +260,32 @@ pre.text-preview {
   overflow: auto;
 }
 
+.warn-box {
+  background: var(--amber-soft);
+  border: 1px solid #ecd9a8;
+  color: var(--amber);
+  border-radius: 8px;
+  padding: 0.7rem 1rem;
+  margin: 0.6rem 0;
+}
+
+.sample-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.8rem;
+  margin: 0.6rem 0;
+}
+
+.sample-grid blockquote {
+  margin: 0.4rem 0 0;
+  padding: 0.5rem 0.7rem;
+  background: var(--bg);
+  border-left: 3px solid var(--border);
+  border-radius: 6px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 0.92rem;
+}
+
 .error-box {
   background: var(--red-soft);
   border: 1px solid #e8c7c4;

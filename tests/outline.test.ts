@@ -11,7 +11,13 @@ import {
   parseOutlineData,
   saveOutlineEdit,
 } from "@/lib/repo/outline";
-import { FakeAiClient, PASS_A, seedProseProject } from "./helpers/fakeAi";
+import {
+  FakeAiClient,
+  PASS_A,
+  seedProseProject,
+  testContract,
+  testStyleProfile,
+} from "./helpers/fakeAi";
 
 const OUTLINE_JSON = JSON.stringify({
   chapters: [
@@ -98,16 +104,8 @@ describe("outline proposal (propose_outline job)", () => {
         jobId: "j1",
         bookTitle: "Libro",
         segments,
-        contract: { projectId, mode: "prose", rules: "", notes: "", signedAt: null },
-        styleProfile: {
-          projectId,
-          tone: "cálido",
-          register: "",
-          person: "",
-          notes: "",
-          data: "{}",
-          updatedAt: "",
-        },
+        contract: testContract(projectId),
+        styleProfile: testStyleProfile(projectId),
       },
       { analysisInputBudget: 20 }, // force chunked summarization
     );

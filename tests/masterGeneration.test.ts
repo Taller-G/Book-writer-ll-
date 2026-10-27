@@ -14,7 +14,13 @@ import {
 import { ensureRules } from "@/lib/repo/normalization";
 import { confirmOutline, saveProposedOutline } from "@/lib/repo/outline";
 import { latestText } from "@/lib/repo/texts";
-import { FakeAiClient, PASS_A, seedProseProject } from "./helpers/fakeAi";
+import {
+  FakeAiClient,
+  PASS_A,
+  seedProseProject,
+  testContract,
+  testStyleProfile,
+} from "./helpers/fakeAi";
 
 const OUTLINE: OutlineData = {
   chapters: [
@@ -176,16 +182,8 @@ describe("books larger than one context window", () => {
         projectId,
         jobId: "j1",
         bookTitle: "Libro largo",
-        contract: { projectId, mode: "prose", rules: "", notes: "", signedAt: null },
-        styleProfile: {
-          projectId,
-          tone: "cálido y directo",
-          register: "conversacional",
-          person: "primera",
-          notes: "",
-          data: "{}",
-          updatedAt: "",
-        },
+        contract: testContract(projectId),
+        styleProfile: testStyleProfile(projectId),
         outline: OUTLINE,
         segments,
         promptRules: [],
