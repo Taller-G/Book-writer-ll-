@@ -30,6 +30,11 @@ describe("schema bootstrap", () => {
       "outlines",
       "normalization_rules",
       "apparatus_sections",
+      "cover_concepts",
+      "back_cover_sections",
+      "title_options",
+      "cover_spine",
+      "cover_iterations",
     ]) {
       expect(tables).toContain(t);
     }

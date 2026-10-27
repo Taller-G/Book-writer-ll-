@@ -83,6 +83,23 @@ export function readOriginal(relativePath: string): Buffer {
   return fs.readFileSync(path.join(dataDir(), relativePath));
 }
 
+/**
+ * Store an uploaded cover image under data/covers/{projectId}/{coverId}/.
+ * Returns the path relative to dataDir() for the covers.file_path column.
+ */
+export function saveCoverImage(
+  projectId: string,
+  coverId: string,
+  filename: string,
+  buffer: Buffer,
+): string {
+  const dir = path.join(dataDir(), "covers", projectId, coverId);
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, safeFilename(filename));
+  fs.writeFileSync(filePath, buffer);
+  return path.relative(dataDir(), filePath);
+}
+
 // Book images (spec §4 Stage 6.4) live under their own tree, separate from the
 // source inventory: they are book material (placed, credited, rendered), not
 // an input to the text pipeline.

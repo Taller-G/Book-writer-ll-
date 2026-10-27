@@ -4,6 +4,7 @@ import { latestJobForStage } from "@/lib/repo/jobs";
 import { getFormatConfig, layoutHasBegun, listPdfVersions } from "@/lib/repo/output";
 import { latestText } from "@/lib/repo/texts";
 import { JobPanel } from "../JobPanel";
+import { CoverStudio } from "./CoverStudio";
 import { FormatWizard } from "./FormatWizard";
 import { ImagesPanel } from "./ImagesPanel";
 
@@ -76,6 +77,8 @@ export function Stage7Format({ db, projectId }: { db: Db; projectId: string }) {
           </table>
         )}
       </div>
+
+      <CoverStudio db={db} projectId={projectId} />
     </>
   );
 }

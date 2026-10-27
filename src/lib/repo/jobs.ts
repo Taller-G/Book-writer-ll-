@@ -17,7 +17,9 @@ export function createJob(
     type: string;
     retryOf?: string;
     attempt?: number;
-    /** Parameters the job needs at creation (e.g. an image prompt). */
+    /** Parameters the job needs at creation, stored in `input`, which the
+     *  executor reads before it overwrites `input` with its running snapshot
+     *  (e.g. an image prompt, or which cover concept to regenerate). */
     params?: unknown;
   },
 ): Job {
