@@ -29,3 +29,7 @@ What: After each ingest, an unlinked counterpart with the same normalized filena
 ## AI calls go through the AiClient seam, never a provider directly
 
 What: All AI-dependent slices call createAiClient(db).complete(request) where the request carries a SystemContext payload (task instructions + editorial contract + style profile) and a model role ('large' for writing/restructuring, 'fast' for mass classification); OpenRouter is the only implementation today and a direct Anthropic provider slots in behind the same interface · Why: spec §9 makes this the seam between the BYOK engine and every other work order — provider swaps must not touch stage code · Where: src/lib/ai/index.ts, src/lib/ai/types.ts
+
+## Full format config lives in format_configs.data; legacy columns are derived
+
+What: The complete physical-format configuration (FormatConfigData: pageSize, typography, marginsCm, paragraphs, folios, conventions) is stored as JSON in format_configs.data; the legacy columns (trim_size, font_family, font_size_pt, line_height, margins) are derived from it via legacyFields() on every write and kept in sync · Why: the schema must stay additive and the Stage 8 export executor (and any older reader) consumes the legacy columns — data JSON extends the contract without a migration · Where: src/lib/format/config.ts (FormatConfigData, legacyFields, parseFormatData), src/lib/repo/output.ts · Learned: parseFormatData deep-merges stored JSON over PROVEN_DEFAULTS, so older partial rows always read as a complete config

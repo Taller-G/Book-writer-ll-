@@ -33,3 +33,11 @@ What: Stage-1 file uploads POST multipart FormData to /api/projects/[id]/sources
 ## Video ingests fully even without ffmpeg; audio extraction is best-effort
 
 What: Video uploads always store the original with checksum and duration; the audio track is extracted to derived/audio.m4a only when system ffmpeg exists, otherwise the source carries a visible note explaining it · Why: ffmpeg is a system dependency that may be absent — blocking the upload would lose the user's material, and the derived extraction can be redone later · Where: src/lib/ingest/ingest.ts (extractVideoAudio)
+
+## Stage 7 seeds the §7 proven format defaults on first read
+
+What: getFormatConfig seeds a missing format_configs row with PROVEN_DEFAULTS (A5, EB Garamond 11/14.5 pt OldStyle, Inter headings/folios 9 pt small caps, margins inner 2.3 / outer 1.9 / top 1.6 / bottom 2.4 cm, first-line indents, recto chapter openings, 2.4 em whitespace separators), so a user who touches nothing in the Format stage still ends with the proven configuration saved · Why: the spec requires that accepting every default untouched yields exactly the §7 configuration, verifiable in the stored format_config — seeding at first read covers even users who never press Save · Where: src/lib/format/config.ts (PROVEN_DEFAULTS), src/lib/repo/output.ts (getFormatConfig), tests/format.test.ts
+
+## Layout "has begun" means an export job or export version exists
+
+What: layoutHasBegun(db, projectId) is true when the project has any export_book job (even failed) or any pdf_versions row; the Format wizard then shows an explicit re-iteration-cost warning if the user picks a different page size than the saved one · Why: changing page size after layout re-flows the whole book — the real project's 12×18→A5 migration cost a full revision cycle, and this is the earliest signal the app has that layout work started · Where: src/lib/repo/output.ts (layoutHasBegun), src/components/stages/FormatWizard.tsx (page-size-warning)
