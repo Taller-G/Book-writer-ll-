@@ -11,6 +11,7 @@ import {
   type AiClient,
   type AiImageRequest,
   type AiImageResponse,
+  type AiMessage,
   type AiRequest,
   type AiResponse,
 } from "./types";
@@ -91,6 +92,33 @@ function decodeDataUrl(url: string): { data: Buffer; mimeType: string } | null {
 }
 
 const BACKOFF_BASE_MS = 500;
+
+/**
+ * Map an AiMessage to the OpenAI-compatible wire shape. A string stays a
+ * string; a multimodal part array becomes the content-block form, with image
+ * parts rendered as `image_url` blocks carrying the data URI.
+ */
+function toWireMessage(message: AiMessage): {
+  role: AiMessage["role"];
+  content:
+    | string
+    | Array<
+        | { type: "text"; text: string }
+        | { type: "image_url"; image_url: { url: string } }
+      >;
+} {
+  if (typeof message.content === "string") {
+    return { role: message.role, content: message.content };
+  }
+  return {
+    role: message.role,
+    content: message.content.map((part) =>
+      part.type === "text"
+        ? { type: "text" as const, text: part.text }
+        : { type: "image_url" as const, image_url: { url: part.dataUri } },
+    ),
+  };
+}
 
 export class OpenRouterClient implements AiClient {
   private readonly opts: Required<
@@ -226,7 +254,7 @@ export class OpenRouterClient implements AiClient {
             model,
             messages: [
               { role: "system", content: buildSystemPrompt(request.system) },
-              ...request.messages,
+              ...request.messages.map(toWireMessage),
             ],
             ...(request.maxTokens ? { max_tokens: request.maxTokens } : {}),
           }),

@@ -137,6 +137,9 @@ export const changeLog = sqliteTable("change_log", {
   where: text("where").notNull(),
   why: text("why").notNull(),
   authorizedBy: text("authorized_by").notNull(),
+  // Structured classification (e.g. the Pass A taxonomy ASR/NOM/REC/NORM);
+  // null for general audit entries.
+  category: text("category"),
   createdAt: text("created_at").notNull(),
 });
 
@@ -152,6 +155,61 @@ export const reviewQueue = sqliteTable("review_queue", {
   resolutionNote: text("resolution_note").notNull().default(""),
   createdAt: text("created_at").notNull(),
   resolvedAt: text("resolved_at"),
+  // Pass C severity, the reaction/question clip, and the Pass C batch id.
+  severity: text("severity", { enum: ["gross", "medium", "minor"] }),
+  clipPath: text("clip_path"),
+  batchId: text("batch_id"),
+  // Links the item back to its source row (e.g. a reactions.id).
+  refId: text("ref_id"),
+  // The doubtful span with the validated text around it (for the card).
+  contextBefore: text("context_before").notNull().default(""),
+  doubtfulText: text("doubtful_text").notNull().default(""),
+  contextAfter: text("context_after").notNull().default(""),
+  // JSON array of resolution options [{id,label,value}] (option A / option B).
+  options: text("options").notNull().default("[]"),
+  // Which stage text the span lives in, so a resolution applies to the text.
+  stageKey: text("stage_key"),
+  // Audio-doubt locating: source + validated-neighbour anchors + the
+  // unreliable raw timestamp (interpolated, drifts ±30s — never trusted alone).
+  sourceId: text("source_id"),
+  anchorBefore: text("anchor_before").notNull().default(""),
+  anchorAfter: text("anchor_after").notNull().default(""),
+  rawTimestamp: real("raw_timestamp"),
+  // How it was resolved, and the applied value (free text / chosen option).
+  resolution: text("resolution"),
+  resolutionValue: text("resolution_value").notNull().default(""),
+  // Stable fingerprint: a span resolved "leave as is" is never re-flagged.
+  dedupeKey: text("dedupe_key").notNull().default(""),
+});
+
+export const reactions = sqliteTable("reactions", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  sourceId: text("source_id"),
+  kind: text("kind", { enum: ["laughter", "applause"] }).notNull(),
+  startMs: integer("start_ms").notNull().default(0),
+  endMs: integer("end_ms").notNull().default(0),
+  clipPath: text("clip_path"),
+  acoustic: text("acoustic").notNull().default("{}"),
+  semantic: text("semantic").notNull().default(""),
+  origin: text("origin", { enum: ["acoustic", "manual"] })
+    .notNull()
+    .default("acoustic"),
+  status: text("status", { enum: ["candidate", "confirmed", "rejected"] })
+    .notNull()
+    .default("candidate"),
+  charAnchor: integer("char_anchor"),
+  createdAt: text("created_at").notNull(),
+  confirmedAt: text("confirmed_at"),
+});
+
+export const editorialLocks = sqliteTable("editorial_locks", {
+  projectId: text("project_id").primaryKey(),
+  locked: integer("locked").notNull().default(0),
+  lockedVersion: integer("locked_version"),
+  lockedAt: text("locked_at"),
+  unlockedAt: text("unlocked_at"),
+  updatedAt: text("updated_at").notNull(),
 });
 
 export const formatConfigs = sqliteTable("format_configs", {
@@ -173,11 +231,44 @@ export const pdfVersions = sqliteTable("pdf_versions", {
   notes: text("notes").notNull().default(""),
   jobId: text("job_id"),
   createdAt: text("created_at").notNull(),
-  // Render metadata; null on rows written by the HTML export.
+  // Render metadata (Stage 6.1–6.2 layout engine); null on HTML export rows.
   textVersion: integer("text_version"),
   formatHash: text("format_hash"),
   qaPassed: integer("qa_passed"),
   qaReportPath: text("qa_report_path"),
+  // Preview / correction-cycle fields (Stage 6.3).
+  // JSON array of per-page text from the deterministic paginator.
+  pages: text("pages").notNull().default("[]"),
+  pageCount: integer("page_count").notNull().default(0),
+  sourceTextVersion: integer("source_text_version"),
+  kind: text("kind", { enum: ["export", "preview", "rollback"] })
+    .notNull()
+    .default("export"),
+  rolledBackFrom: integer("rolled_back_from"),
+  qa: text("qa").notNull().default("{}"),
+  diff: text("diff").notNull().default("{}"),
+});
+
+export const correctionMessages = sqliteTable("correction_messages", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  role: text("role", { enum: ["user", "agent"] }).notNull(),
+  body: text("body").notNull().default(""),
+  pageNumber: integer("page_number"),
+  // JSON {x,y,w,h} normalized 0..1 over the page.
+  region: text("region"),
+  // Data URI of the marked region (annotation) or an attached screenshot.
+  image: text("image"),
+  classification: text("classification", { enum: ["content", "layout"] }),
+  status: text("status", {
+    enum: ["open", "awaiting_confirmation", "applied", "rejected", "answered"],
+  })
+    .notNull()
+    .default("open"),
+  pdfVersion: integer("pdf_version"),
+  targetRef: text("target_ref"),
+  proposal: text("proposal"),
+  createdAt: text("created_at").notNull(),
 });
 
 export const covers = sqliteTable("covers", {
@@ -324,8 +415,11 @@ export type StyleRef = typeof styleRefs.$inferSelect;
 export type StageText = typeof stageTexts.$inferSelect;
 export type ChangeLogEntry = typeof changeLog.$inferSelect;
 export type ReviewItem = typeof reviewQueue.$inferSelect;
+export type Reaction = typeof reactions.$inferSelect;
+export type EditorialLock = typeof editorialLocks.$inferSelect;
 export type FormatConfig = typeof formatConfigs.$inferSelect;
 export type PdfVersion = typeof pdfVersions.$inferSelect;
+export type CorrectionMessage = typeof correctionMessages.$inferSelect;
 export type Cover = typeof covers.$inferSelect;
 export type ChecklistItem = typeof checklistItems.$inferSelect;
 export type Outline = typeof outlines.$inferSelect;

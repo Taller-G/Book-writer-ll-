@@ -20,8 +20,10 @@ import type {
 
 export type {
   AiClient,
+  AiContentPart,
   AiImageRequest,
   AiImageResponse,
+  AiMessage,
   AiRequest,
   AiResponse,
   SystemContext,

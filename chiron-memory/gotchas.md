@@ -2,6 +2,10 @@
 
 A non-obvious pitfall or trap, learned the hard way.
 
+## Reaction detection only decodes WAV; non-WAV recordings are silently skipped
+
+What: src/lib/reactions/wav.ts is a dependency-free PCM WAV codec; detect_reactions and the clip actions try decodeWav and skip a source on failure (mp3/m4a/video need ffmpeg, treated as absent). Reaction↔transcript alignment is proportional (ms ↔ char offset via duration), not forced-alignment, so char_anchor and ambiguous-question clip timings are approximate and rely on human confirmation · Why: spec requires AI-free DSP and the project already treats ffmpeg as possibly-absent; exact alignment is out of scope · Where: src/lib/reactions/wav.ts, src/lib/reactions/detect.ts (msToCharOffset), src/lib/jobs/executors.ts · Learned: to exercise detection in a test, write a WAV via encodeWav + saveOriginal + addFileSource and inject a FakeAiClient for the semantic check (setAiFactoryForTests)
+
 ## Provider error text must be redacted before it reaches an error message
 
 What: The OpenRouter client passes any provider-echoed text through redactSecrets (strips sk-or-*/sk-ant-*/Bearer tokens) before building an error message · Why: job errors are persisted in jobs.error and rendered in the UI — a provider echoing the key back would otherwise leak it into both · Where: src/lib/ai/errors.ts, src/lib/ai/openrouter.ts · Learned: treat provider error bodies as untrusted output that may contain your own secrets
@@ -33,3 +37,6 @@ What: bootstrap.ts creates tables with CREATE TABLE IF NOT EXISTS, so adding a c
 ## Choice-presenting AI calls must opt out of injection with system.bare
 
 What: createAiClient auto-injects the contract and confirmed style profile into every call, so an executor whose purpose is to present a choice (tone_samples comparing tones, extract_style reading references fresh) must set system.bare — merely omitting the fields is no longer enough · Why: during the main-merge of the Stage-2 and Stage-3 work orders, tone_samples relied on "not passing the contract" to keep samples unbiased; the injection wrapper silently defeated that until bare was added · Where: src/lib/jobs/executors.ts (toneSamples, extractStyle), src/lib/ai/index.ts · Learned: when a seam gains default behavior, audit existing callers for ones that depended on the old default's absence
+## cleanup_pass_a now makes an AI call; tests with a key must stub it
+
+What: Pass A (cleanup_pass_a) now asks the AI to propose transcription-noise corrections before the deterministic mechanical cleanup. It gracefully SKIPS the AI phase only on AiAuthError (no key configured) — any other AI/provider error fails the job (visible, retryable). So any test that sets an API key (setApiKey) and runs cleanup_pass_a must stub the AI (setAiFactoryForTests(() => new FakeAiClient(() => "[]"))) or it will attempt a live network call · Why: the no-key skip keeps the deterministic path working offline, but a configured-but-unstubbed key triggers a real OpenRouter request · Where: src/lib/jobs/executors.ts (proposePassACorrections, cleanupPassA), tests/styleProfile.test.ts (mid-project profile change describe) · Learned: when adding an AI call to a previously-deterministic executor, audit existing tests that set a key but didn't expect an AI call

@@ -26,9 +26,19 @@ export interface SystemContext {
   bare?: boolean;
 }
 
+/**
+ * A multimodal message part. Text parts carry prose; image parts carry a data
+ * URI (e.g. a marked PDF region captured in the correction cycle). A plain
+ * string message is shorthand for a single text part, so existing callers are
+ * unaffected.
+ */
+export type AiContentPart =
+  | { type: "text"; text: string }
+  | { type: "image"; dataUri: string };
+
 export interface AiMessage {
   role: "user" | "assistant";
-  content: string;
+  content: string | AiContentPart[];
 }
 
 export interface AiRequest {

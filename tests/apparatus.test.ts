@@ -49,11 +49,13 @@ beforeEach(async () => {
   approveStyleSample(handle.db, projectId);
   setAiFactoryForTests(
     () =>
-      new FakeAiClient((req) =>
-        req.messages[0].content.includes("Table of contents")
+      new FakeAiClient((req) => {
+        const first = req.messages[0].content;
+        const text = typeof first === "string" ? first : JSON.stringify(first);
+        return text.includes("Table of contents")
           ? APPARATUS_JSON
-          : "Prosa del capítulo, sin citas.",
-      ),
+          : "Prosa del capítulo, sin citas.";
+      }),
   );
   await enqueueAndRun(handle, { projectId, stage: 5, type: "generate_master_text" });
 });

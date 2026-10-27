@@ -76,19 +76,23 @@ describe("editorial contract — mode is read by downstream passes", () => {
     expect(passA.content).not.toMatch(/\bUm\b/i);
   });
 
-  it("verbatim mode makes Pass B pass the text through unchanged", async () => {
+  it("verbatim mode: Pass B structures the text without changing a single word", async () => {
     saveContract(handle.db, { projectId, mode: "verbatim", rules: "", notes: "" });
-    const longParagraph = Array(130).fill("word").join(" ");
-    insertText(handle.db, { projectId, stageKey: "passA", version: 1, content: longParagraph });
+    const passA = "Empecé solo en un garaje. Pero todo cambió con el primer cliente.";
+    insertText(handle.db, { projectId, stageKey: "passA", version: 1, content: passA });
 
     const job = await enqueueAndRun(handle, { projectId, stage: 5, type: "refine_pass_b" });
     expect(job.status).toBe("succeeded");
-    expect(JSON.parse(job.output!).rewritesBlocked).toBe(true);
-    expect(JSON.parse(job.output!).flagged).toBe(0);
-    expect(latestText(handle.db, projectId, "passB")!.content).toBe(longParagraph);
+    const out = latestText(handle.db, projectId, "passB")!.content;
+    // "Pero" is a discourse anchor → a paragraph break is inserted...
+    expect(out).toContain("\n\n");
+    // ...but the spoken-word sequence is identical.
+    const words = (s: string) => s.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+    expect(words(out)).toEqual(words(passA));
+    expect(JSON.parse(job.output!).paragraphBreaksAdded).toBe(1);
 
     const log = handle.sqlite
-      .prepare(`SELECT what FROM change_log WHERE project_id = ? AND what LIKE '%verbatim contract blocks rewrites%'`)
+      .prepare(`SELECT why FROM change_log WHERE project_id = ? AND why LIKE '%no word changed%'`)
       .all(projectId);
     expect(log.length).toBe(1);
   });
