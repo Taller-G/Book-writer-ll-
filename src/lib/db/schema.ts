@@ -190,6 +190,86 @@ export const covers = sqliteTable("covers", {
   createdAt: text("created_at").notNull(),
 });
 
+export const coverConcepts = sqliteTable("cover_concepts", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  source: text("source", { enum: ["ai", "upload"] }).notNull().default("ai"),
+  approach: text("approach").notNull().default("minimalist"),
+  title: text("title").notNull().default(""),
+  subtitle: text("subtitle").notNull().default(""),
+  tagline: text("tagline").notNull().default(""),
+  rationale: text("rationale").notNull().default(""),
+  explanation: text("explanation").notNull().default(""),
+  // JSON array of hex colors.
+  palette: text("palette").notNull().default("[]"),
+  imagery: text("imagery").notNull().default(""),
+  // Uploaded PNG only.
+  filePath: text("file_path"),
+  widthPx: integer("width_px"),
+  heightPx: integer("height_px"),
+  status: text("status", { enum: ["proposed", "kept", "discarded"] })
+    .notNull()
+    .default("proposed"),
+  selected: integer("selected").notNull().default(0),
+  position: integer("position").notNull().default(0),
+  jobId: text("job_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const backCoverSections = sqliteTable("back_cover_sections", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  sectionKey: text("section_key", { enum: ["blurb", "quote", "bio"] }).notNull(),
+  explanation: text("explanation").notNull().default(""),
+  content: text("content").notNull().default(""),
+  sourceExcerpt: text("source_excerpt").notNull().default(""),
+  status: text("status", { enum: ["proposed", "accepted", "discarded"] })
+    .notNull()
+    .default("proposed"),
+  position: integer("position").notNull().default(0),
+  jobId: text("job_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const titleOptions = sqliteTable("title_options", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  label: text("label").notNull(),
+  title: text("title").notNull().default(""),
+  subtitle: text("subtitle").notNull().default(""),
+  tagline: text("tagline").notNull().default(""),
+  rationale: text("rationale").notNull().default(""),
+  selected: integer("selected").notNull().default(0),
+  jobId: text("job_id"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const coverSpine = sqliteTable("cover_spine", {
+  projectId: text("project_id").primaryKey(),
+  paperStock: text("paper_stock").notNull().default("offset_90_cream"),
+  confirmed: integer("confirmed").notNull().default(0),
+  confirmedPageCount: integer("confirmed_page_count"),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const coverIterations = sqliteTable("cover_iterations", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  conceptId: text("concept_id"),
+  target: text("target", { enum: ["front", "back", "spine", "spread"] })
+    .notNull()
+    .default("spread"),
+  // JSON {x,y,w,h} fractions 0..1; null for a whole-cover note.
+  region: text("region"),
+  note: text("note").notNull(),
+  response: text("response"),
+  jobId: text("job_id"),
+  createdAt: text("created_at").notNull(),
+  resolvedAt: text("resolved_at"),
+});
+
 export const checklistItems = sqliteTable("checklist_items", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),
@@ -296,6 +376,11 @@ export type ReviewItem = typeof reviewQueue.$inferSelect;
 export type FormatConfig = typeof formatConfigs.$inferSelect;
 export type PdfVersion = typeof pdfVersions.$inferSelect;
 export type Cover = typeof covers.$inferSelect;
+export type CoverConcept = typeof coverConcepts.$inferSelect;
+export type BackCoverSection = typeof backCoverSections.$inferSelect;
+export type TitleOption = typeof titleOptions.$inferSelect;
+export type CoverSpine = typeof coverSpine.$inferSelect;
+export type CoverIteration = typeof coverIterations.$inferSelect;
 export type ChecklistItem = typeof checklistItems.$inferSelect;
 export type Outline = typeof outlines.$inferSelect;
 export type NormalizationRule = typeof normalizationRules.$inferSelect;

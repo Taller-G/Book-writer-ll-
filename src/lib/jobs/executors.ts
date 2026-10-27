@@ -6,6 +6,22 @@ import { dataDir, type Db, type DbHandle } from "../db/client";
 import type { EditorialContract, Job, StyleProfile } from "../db/schema";
 import { proposeApparatus } from "../master/apparatus";
 import {
+  draftBackCover,
+  iterateCover,
+  proposeCoverConcepts,
+  regenerateConcept,
+} from "../cover/concepts";
+import {
+  getConcept,
+  oldestPendingIteration,
+  parseRegion,
+  resolveIteration,
+  saveProposedBackCover,
+  saveProposedConcepts,
+  saveTitleOptions,
+  updateConceptDraft,
+} from "../repo/covers";
+import {
   assembleMasterText,
   generateMasterText,
   generateStyleSample,
@@ -1055,6 +1071,194 @@ function escapeHtml(s: string): string {
     .replaceAll(">", "&gt;");
 }
 
+// --- Stage 7: cover design (spec §4 Stage 7) ----------------------------
+// Four AI executors, all routed through the swappable aiFactory so tests
+// inject a fake. propose/regenerate shape cover concepts; draft_back_cover is
+// grounded in the FINAL text; iterate_cover carries a marked region to the
+// agent. Each follows the house rule: AI work first, one success transaction.
+
+/** A short synopsis of the book for grounding cover concepts: the opening of
+ *  the best available text, headings stripped. */
+function bookSynopsis(db: Db, projectId: string): string {
+  const text =
+    latestText(db, projectId, "final") ??
+    latestText(db, projectId, "passB") ??
+    latestText(db, projectId, "passA") ??
+    latestText(db, projectId, "raw");
+  if (!text) return "";
+  return text.content
+    .split(/\n+/)
+    .filter((l) => !l.trim().startsWith("#"))
+    .join(" ")
+    .slice(0, 1_500)
+    .trim();
+}
+
+const proposeCoverConceptsExec: Executor = async (handle, job) => {
+  const { db, sqlite } = handle;
+  const project = getProject(db, job.projectId);
+  if (!project) throw new JobInputError("Project not found.");
+  const contract = getContract(db, job.projectId);
+  if (!contract) {
+    throw new JobInputError(
+      "Sign the editorial contract (Stage 2) before proposing covers.",
+    );
+  }
+  markJobRunning(db, job.id, { title: project.title, tone: contract.tone }, 1);
+  const { concepts, titleOptions, aiCalls } = await proposeCoverConcepts(
+    aiFactory(db),
+    {
+      projectId: job.projectId,
+      jobId: job.id,
+      bookTitle: project.title,
+      author: project.author,
+      contract,
+      styleProfile: getConfirmedStyleProfile(db, job.projectId) ?? undefined,
+      synopsis: bookSynopsis(db, job.projectId),
+    },
+  );
+  sqlite.transaction(() => {
+    const saved = saveProposedConcepts(db, job.projectId, concepts, job.id);
+    saveTitleOptions(db, job.projectId, titleOptions, job.id);
+    appendChange(db, {
+      projectId: job.projectId,
+      what: `Proposed ${saved.length} cover concept(s) and ${titleOptions.length} title option(s)`,
+      where: "stage 7 · covers",
+      why: "AI cover proposal from title, genre/tone and synopsis",
+      authorizedBy: `job ${job.type} (${job.id})`,
+    });
+    markJobSucceeded(
+      db,
+      job.id,
+      { approaches: saved.map((c) => c.approach), titleOptions: titleOptions.length, aiCalls },
+      1,
+    );
+  })();
+};
+
+const regenerateCoverConceptExec: Executor = async (handle, job) => {
+  const { db, sqlite } = handle;
+  const params = JSON.parse(job.input || "{}") as { conceptId?: string };
+  const concept = params.conceptId ? getConcept(db, params.conceptId) : undefined;
+  if (!concept || concept.projectId !== job.projectId) {
+    throw new JobInputError("The concept to regenerate was not found.");
+  }
+  if (concept.source !== "ai") {
+    throw new JobInputError("Only AI concepts can be regenerated.");
+  }
+  const project = getProject(db, job.projectId)!;
+  const contract = getContract(db, job.projectId);
+  if (!contract) throw new JobInputError("Sign the editorial contract first.");
+  markJobRunning(db, job.id, { conceptId: concept.id, approach: concept.approach }, 1);
+  const draft = await regenerateConcept(aiFactory(db), {
+    projectId: job.projectId,
+    jobId: job.id,
+    bookTitle: project.title,
+    author: project.author,
+    contract,
+    styleProfile: getConfirmedStyleProfile(db, job.projectId) ?? undefined,
+    synopsis: bookSynopsis(db, job.projectId),
+    approach: concept.approach,
+    avoid: concept.title,
+  });
+  sqlite.transaction(() => {
+    updateConceptDraft(db, concept.id, draft, job.id);
+    appendChange(db, {
+      projectId: job.projectId,
+      what: `Regenerated the "${concept.approach}" cover concept`,
+      where: `stage 7 · covers · ${concept.approach}`,
+      why: "user asked for a fresh take on this concept",
+      authorizedBy: `job ${job.type} (${job.id})`,
+    });
+    markJobSucceeded(db, job.id, { conceptId: concept.id, approach: concept.approach }, 1);
+  })();
+};
+
+const draftBackCoverExec: Executor = async (handle, job) => {
+  const { db, sqlite } = handle;
+  const finalText = latestText(db, job.projectId, "final");
+  if (!finalText) {
+    throw new JobInputError(
+      "The back cover is drafted from the FINAL text — finalize the text in Review first.",
+    );
+  }
+  const project = getProject(db, job.projectId)!;
+  const contract = getContract(db, job.projectId);
+  if (!contract) throw new JobInputError("Sign the editorial contract first.");
+  markJobRunning(db, job.id, { stageKey: "final", version: finalText.version }, finalText.version);
+  const { drafts, quoteVerified, aiCalls } = await draftBackCover(aiFactory(db), {
+    projectId: job.projectId,
+    jobId: job.id,
+    bookTitle: project.title,
+    author: project.author,
+    contract,
+    styleProfile: getConfirmedStyleProfile(db, job.projectId) ?? undefined,
+    finalText: finalText.content,
+  });
+  sqlite.transaction(() => {
+    const saved = saveProposedBackCover(db, job.projectId, drafts, job.id);
+    appendChange(db, {
+      projectId: job.projectId,
+      what:
+        `Drafted back-cover content (${saved.map((s) => s.sectionKey).join(", ")}); ` +
+        `quote ${quoteVerified ? "verified against" : "fell back to a sentence from"} the book text`,
+      where: "stage 7 · back cover",
+      why: "guided back-cover drafting from the book's actual content",
+      authorizedBy: `job ${job.type} (${job.id})`,
+    });
+    markJobSucceeded(
+      db,
+      job.id,
+      { sections: saved.map((s) => s.sectionKey), quoteVerified, aiCalls },
+      finalText.version,
+    );
+  })();
+};
+
+const iterateCoverExec: Executor = async (handle, job) => {
+  const { db, sqlite } = handle;
+  const pending = oldestPendingIteration(db, job.projectId);
+  if (!pending) {
+    throw new JobInputError("There is no pending cover annotation to answer.");
+  }
+  const project = getProject(db, job.projectId)!;
+  const contract = getContract(db, job.projectId);
+  if (!contract) throw new JobInputError("Sign the editorial contract first.");
+  const concept = pending.conceptId ? getConcept(db, pending.conceptId) : undefined;
+  markJobRunning(db, job.id, { iterationId: pending.id, target: pending.target }, 1);
+  const { response, aiCalls } = await iterateCover(aiFactory(db), {
+    projectId: job.projectId,
+    jobId: job.id,
+    bookTitle: project.title,
+    contract,
+    styleProfile: getConfirmedStyleProfile(db, job.projectId) ?? undefined,
+    concept: concept
+      ? {
+          approach: concept.approach,
+          title: concept.title,
+          subtitle: concept.subtitle,
+          tagline: concept.tagline,
+          rationale: concept.rationale,
+          imagery: concept.imagery,
+        }
+      : undefined,
+    target: pending.target,
+    region: parseRegion(pending.region),
+    note: pending.note,
+  });
+  sqlite.transaction(() => {
+    resolveIteration(db, pending.id, response, job.id);
+    appendChange(db, {
+      projectId: job.projectId,
+      what: `Cover agent answered an annotation on the ${pending.target}`,
+      where: "stage 7 · cover iteration",
+      why: "user annotated the cover preview and asked for a revision",
+      authorizedBy: `job ${job.type} (${job.id})`,
+    });
+    markJobSucceeded(db, job.id, { iterationId: pending.id, aiCalls }, 1);
+  })();
+};
+
 export const EXECUTORS: Record<string, Executor> = {
   ingest_sources: ingestSources,
   tone_samples: toneSamples,
@@ -1069,4 +1273,8 @@ export const EXECUTORS: Record<string, Executor> = {
   finalize_text: finalizeText,
   render_pdf: renderPdf,
   export_book: exportBook,
+  propose_cover_concepts: proposeCoverConceptsExec,
+  regenerate_cover_concept: regenerateCoverConceptExec,
+  draft_back_cover: draftBackCoverExec,
+  iterate_cover: iterateCoverExec,
 };

@@ -203,6 +203,105 @@ CREATE TABLE IF NOT EXISTS covers (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Stage 7 cover design. The legacy covers table above stays as Stage 8's
+-- simple final-cover list; these tables hold the richer Stage 7 flow.
+
+-- Proposed cover designs: AI concepts (one per approach) and user-uploaded
+-- PNGs. Each is kept or discarded independently; the selected flag marks the
+-- one carried into the export.
+CREATE TABLE IF NOT EXISTS cover_concepts (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source TEXT NOT NULL DEFAULT 'ai' CHECK (source IN ('ai','upload')),
+  approach TEXT NOT NULL DEFAULT 'minimalist',
+  title TEXT NOT NULL DEFAULT '',
+  subtitle TEXT NOT NULL DEFAULT '',
+  tagline TEXT NOT NULL DEFAULT '',
+  rationale TEXT NOT NULL DEFAULT '',
+  explanation TEXT NOT NULL DEFAULT '',
+  -- JSON array of hex colors proposed for the palette.
+  palette TEXT NOT NULL DEFAULT '[]',
+  imagery TEXT NOT NULL DEFAULT '',
+  -- Uploaded PNG only: path relative to dataDir() and its pixel dimensions.
+  file_path TEXT,
+  width_px INTEGER,
+  height_px INTEGER,
+  status TEXT NOT NULL DEFAULT 'proposed'
+    CHECK (status IN ('proposed','kept','discarded')),
+  selected INTEGER NOT NULL DEFAULT 0,
+  position INTEGER NOT NULL DEFAULT 0,
+  job_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cover_concepts_project ON cover_concepts(project_id);
+
+-- Guided back-cover content: a two-paragraph blurb, a verbatim quote from the
+-- book, and a short author bio. Each carries a plain-language explanation of
+-- what a professional back cover uses it for.
+CREATE TABLE IF NOT EXISTS back_cover_sections (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  section_key TEXT NOT NULL CHECK (section_key IN ('blurb','quote','bio')),
+  explanation TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  -- For the quote: the surrounding sentence it was lifted from, for provenance.
+  source_excerpt TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'proposed'
+    CHECK (status IN ('proposed','accepted','discarded')),
+  position INTEGER NOT NULL DEFAULT 0,
+  job_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (project_id, section_key)
+);
+CREATE INDEX IF NOT EXISTS idx_back_cover_sections_project ON back_cover_sections(project_id);
+
+-- Title / subtitle / tagline options proposed for A/B/C comparison.
+CREATE TABLE IF NOT EXISTS title_options (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  subtitle TEXT NOT NULL DEFAULT '',
+  tagline TEXT NOT NULL DEFAULT '',
+  rationale TEXT NOT NULL DEFAULT '',
+  selected INTEGER NOT NULL DEFAULT 0,
+  job_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (project_id, label)
+);
+CREATE INDEX IF NOT EXISTS idx_title_options_project ON title_options(project_id);
+
+-- Spine/paper configuration. The page count is estimated live from the FINAL
+-- text and format; this row only holds the chosen paper stock and whether the
+-- width has been confirmed with the printer (and for which page count).
+CREATE TABLE IF NOT EXISTS cover_spine (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  paper_stock TEXT NOT NULL DEFAULT 'offset_90_cream',
+  confirmed INTEGER NOT NULL DEFAULT 0,
+  confirmed_page_count INTEGER,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Cover iteration thread: a user annotation (optionally a marked region on the
+-- preview) plus the agent's reply. Mirrors the interior-preview cycle.
+CREATE TABLE IF NOT EXISTS cover_iterations (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  concept_id TEXT,
+  target TEXT NOT NULL DEFAULT 'spread'
+    CHECK (target IN ('front','back','spine','spread')),
+  -- JSON {x,y,w,h} as fractions 0..1 of the cover; NULL for a whole-cover note.
+  region TEXT,
+  note TEXT NOT NULL,
+  response TEXT,
+  job_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cover_iterations_project ON cover_iterations(project_id);
+
 CREATE TABLE IF NOT EXISTS checklist_items (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

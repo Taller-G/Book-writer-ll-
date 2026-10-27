@@ -83,6 +83,23 @@ export function readOriginal(relativePath: string): Buffer {
   return fs.readFileSync(path.join(dataDir(), relativePath));
 }
 
+/**
+ * Store an uploaded cover image under data/covers/{projectId}/{coverId}/.
+ * Returns the path relative to dataDir() for the covers.file_path column.
+ */
+export function saveCoverImage(
+  projectId: string,
+  coverId: string,
+  filename: string,
+  buffer: Buffer,
+): string {
+  const dir = path.join(dataDir(), "covers", projectId, coverId);
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, safeFilename(filename));
+  fs.writeFileSync(filePath, buffer);
+  return path.relative(dataDir(), filePath);
+}
+
 /** Recompute the original's SHA-1 and compare it to the stored checksum. */
 export function verifyChecksum(
   relativePath: string,
