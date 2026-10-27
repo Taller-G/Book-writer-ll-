@@ -3,11 +3,20 @@
 import { revalidatePath } from "next/cache";
 import { getDb } from "../db/client";
 import type { Source } from "../db/schema";
+import { removeSourceFiles, verifyChecksum } from "../files/store";
 import { saveContract, saveStyleProfile } from "../repo/editorial";
 import { addCover, saveFormatConfig, selectCover, setChecklistDone } from "../repo/output";
 import { touchProject } from "../repo/projects";
 import { resolveReviewItem } from "../repo/review";
-import { addSource, removeSource } from "../repo/sources";
+import {
+  addSource,
+  getSource,
+  linkSources,
+  mergeSourceMetadata,
+  removeSource,
+  unlinkSources,
+} from "../repo/sources";
+import { now } from "../util";
 
 function stagePath(projectId: string, stage: number): string {
   return `/projects/${projectId}/stages/${stage}`;
@@ -29,7 +38,66 @@ export async function removeSourceAction(formData: FormData): Promise<void> {
   const projectId = String(formData.get("projectId") ?? "");
   const sourceId = String(formData.get("sourceId") ?? "");
   if (!sourceId) return;
-  removeSource(getDb(), sourceId);
+  const db = getDb();
+  const source = getSource(db, sourceId);
+  removeSource(db, sourceId);
+  // Removing a source deletes its whole file tree (original + derived).
+  if (source?.originalPath) {
+    removeSourceFiles(source.projectId, sourceId);
+  }
+  revalidatePath(stagePath(projectId, 1));
+}
+
+/** Recompute the original's SHA-1 and record the verification on the card. */
+export async function verifySourceAction(formData: FormData): Promise<void> {
+  const projectId = String(formData.get("projectId") ?? "");
+  const sourceId = String(formData.get("sourceId") ?? "");
+  if (!sourceId) return;
+  const db = getDb();
+  const source = getSource(db, sourceId);
+  if (!source?.originalPath || !source.checksumSha1) return;
+  let verification: { ok: boolean; actual: string };
+  try {
+    verification = verifyChecksum(source.originalPath, source.checksumSha1);
+  } catch (e) {
+    verification = {
+      ok: false,
+      actual: `unreadable: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+  mergeSourceMetadata(db, sourceId, {
+    lastVerifiedAt: now(),
+    lastVerifiedOk: verification.ok,
+    lastVerifiedSha1: verification.actual,
+  });
+  revalidatePath(stagePath(projectId, 1));
+}
+
+/** Manually link an audio/video source with a transcript/document source. */
+export async function linkSourcesAction(formData: FormData): Promise<void> {
+  const projectId = String(formData.get("projectId") ?? "");
+  const sourceId = String(formData.get("sourceId") ?? "");
+  const otherId = String(formData.get("otherId") ?? "");
+  if (!sourceId || !otherId || sourceId === otherId) return;
+  const db = getDb();
+  const a = getSource(db, sourceId);
+  const b = getSource(db, otherId);
+  if (!a || !b || a.projectId !== b.projectId) return;
+  const isMedia = (s: Source) =>
+    s.mediaType === "audio" || s.mediaType === "video" || s.kind === "audio";
+  const media = isMedia(a) ? a : isMedia(b) ? b : null;
+  const text = media === a ? b : a;
+  if (!media || isMedia(text)) return;
+  linkSources(db, media.id, text.id);
+  touchProject(db, projectId);
+  revalidatePath(stagePath(projectId, 1));
+}
+
+export async function unlinkSourceAction(formData: FormData): Promise<void> {
+  const projectId = String(formData.get("projectId") ?? "");
+  const sourceId = String(formData.get("sourceId") ?? "");
+  if (!sourceId) return;
+  unlinkSources(getDb(), sourceId);
   revalidatePath(stagePath(projectId, 1));
 }
 

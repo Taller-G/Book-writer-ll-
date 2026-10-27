@@ -308,3 +308,76 @@ ul.checklist li {
 .progress-track .seg.current {
   background: var(--accent);
 }
+
+/* Stage 1 — source ingestion */
+.dropzone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 1.6rem;
+  text-align: center;
+  cursor: pointer;
+  background: var(--bg);
+}
+
+.dropzone.drag {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dropzone p {
+  margin: 0.2rem 0;
+}
+
+ul.upload-results {
+  list-style: none;
+  padding: 0;
+  margin: 0.6rem 0 0;
+}
+
+ul.upload-results li {
+  padding: 0.25rem 0;
+}
+
+ul.upload-results li.ok {
+  color: var(--green);
+}
+
+ul.upload-results li.fail {
+  color: var(--red);
+}
+
+.source-card {
+  margin: 0.8rem 0;
+}
+
+.source-card h3 {
+  margin: 0 0 0.2rem;
+  font-size: 1rem;
+}
+
+.source-checksum {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 0.4rem 0;
+}
+
+.source-link {
+  margin: 0.4rem 0;
+}
+
+.verify-ok {
+  color: var(--green);
+}
+
+.verify-fail {
+  color: var(--red);
+  font-weight: 600;
+}
+
+details.card > summary {
+  cursor: pointer;
+}

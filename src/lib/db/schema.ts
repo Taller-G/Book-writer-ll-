@@ -43,6 +43,19 @@ export const sources = sqliteTable("sources", {
   content: text("content").notNull().default(""),
   metadata: text("metadata").notNull().default("{}"),
   createdAt: text("created_at").notNull(),
+  // File-backed sources only; all null for pasted sources.
+  mediaType: text("media_type", {
+    enum: ["audio", "video", "document", "image", "text"],
+  }),
+  originalName: text("original_name"),
+  originalPath: text("original_path"),
+  mimeType: text("mime_type"),
+  sizeBytes: integer("size_bytes"),
+  checksumSha1: text("checksum_sha1"),
+  durationSeconds: real("duration_seconds"),
+  language: text("language"),
+  wordCount: integer("word_count"),
+  linkedSourceId: text("linked_source_id"),
 });
 
 export const editorialContracts = sqliteTable("editorial_contracts", {

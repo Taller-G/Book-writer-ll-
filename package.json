@@ -12,7 +12,10 @@
   "dependencies": {
     "better-sqlite3": "^11.10.0",
     "drizzle-orm": "^0.41.0",
+    "mammoth": "^1.13.0",
+    "music-metadata": "^12.3.2",
     "next": "^15.3.0",
+    "pdf-parse": "^2.4.5",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

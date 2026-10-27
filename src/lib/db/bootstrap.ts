@@ -29,7 +29,20 @@ CREATE TABLE IF NOT EXISTS sources (
   title TEXT NOT NULL,
   content TEXT NOT NULL DEFAULT '',
   metadata TEXT NOT NULL DEFAULT '{}',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- File-backed sources (Stage 1 ingestion). All nullable: pasted sources
+  -- have no file behind them. original_path is relative to dataDir() so the
+  -- data directory stays relocatable.
+  media_type TEXT,
+  original_name TEXT,
+  original_path TEXT,
+  mime_type TEXT,
+  size_bytes INTEGER,
+  checksum_sha1 TEXT,
+  duration_seconds REAL,
+  language TEXT,
+  word_count INTEGER,
+  linked_source_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sources_project ON sources(project_id);
 
@@ -195,10 +208,40 @@ CREATE TABLE IF NOT EXISTS user_prefs (
 INSERT OR IGNORE INTO user_prefs (id) VALUES (1);
 `;
 
+// Columns added after first release. CREATE TABLE IF NOT EXISTS skips
+// existing databases, so new columns must also be applied via ALTER TABLE,
+// guarded by a pragma check to stay idempotent.
+const SOURCE_FILE_COLUMNS: Array<[name: string, type: string]> = [
+  ["media_type", "TEXT"],
+  ["original_name", "TEXT"],
+  ["original_path", "TEXT"],
+  ["mime_type", "TEXT"],
+  ["size_bytes", "INTEGER"],
+  ["checksum_sha1", "TEXT"],
+  ["duration_seconds", "REAL"],
+  ["language", "TEXT"],
+  ["word_count", "INTEGER"],
+  ["linked_source_id", "TEXT"],
+];
+
+function addMissingSourceColumns(db: Database): void {
+  const existing = new Set(
+    (db.pragma("table_info(sources)") as Array<{ name: string }>).map(
+      (c) => c.name,
+    ),
+  );
+  for (const [name, type] of SOURCE_FILE_COLUMNS) {
+    if (!existing.has(name)) {
+      db.exec(`ALTER TABLE sources ADD COLUMN ${name} ${type}`);
+    }
+  }
+}
+
 export function applyBootstrap(db: Database): void {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(DDL);
+  addMissingSourceColumns(db);
   // A server crash mid-job leaves 'running'/'queued' rows behind with no
   // worker attached. Surface them as failed-and-retryable instead of
   // forever-running.
