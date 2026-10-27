@@ -114,17 +114,68 @@ export function insertPdfVersion(
     filePath: string;
     notes?: string;
     jobId?: string;
+    // Render metadata (Stage 6.1–6.2 layout engine).
     textVersion?: number;
     formatHash?: string;
     qaPassed?: number;
     qaReportPath?: string;
+    // Preview / correction-cycle fields (Stage 6.3).
+    /** JSON array of per-page text (the paginator's serialized output). */
+    pages?: string;
+    pageCount?: number;
+    sourceTextVersion?: number;
+    kind?: PdfVersion["kind"];
+    rolledBackFrom?: number;
+    /** JSON QaResult. */
+    qa?: string;
+    /** JSON PageDiff against the previous version. */
+    diff?: string;
   },
 ): PdfVersion {
   const id = newId();
   db.insert(pdfVersions)
-    .values({ ...input, id, notes: input.notes ?? "", createdAt: now() })
+    .values({
+      id,
+      projectId: input.projectId,
+      version: input.version,
+      filePath: input.filePath,
+      notes: input.notes ?? "",
+      jobId: input.jobId,
+      textVersion: input.textVersion,
+      formatHash: input.formatHash,
+      qaPassed: input.qaPassed,
+      qaReportPath: input.qaReportPath,
+      pages: input.pages ?? "[]",
+      pageCount: input.pageCount ?? 0,
+      sourceTextVersion: input.sourceTextVersion,
+      kind: input.kind ?? "export",
+      rolledBackFrom: input.rolledBackFrom,
+      qa: input.qa ?? "{}",
+      diff: input.diff ?? "{}",
+      createdAt: now(),
+    })
     .run();
   return db.select().from(pdfVersions).where(eq(pdfVersions.id, id)).get()!;
+}
+
+export function getPdfVersion(
+  db: Db,
+  projectId: string,
+  version: number,
+): PdfVersion | undefined {
+  return db
+    .select()
+    .from(pdfVersions)
+    .where(and(eq(pdfVersions.projectId, projectId), eq(pdfVersions.version, version)))
+    .get();
+}
+
+/** The current (highest-numbered) PDF version, or undefined when none exist. */
+export function latestPdfVersion(
+  db: Db,
+  projectId: string,
+): PdfVersion | undefined {
+  return listPdfVersions(db, projectId)[0];
 }
 
 export function listCovers(db: Db, projectId: string): Cover[] {

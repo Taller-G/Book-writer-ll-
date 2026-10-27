@@ -42,11 +42,14 @@ import { ensureRules } from "../repo/normalization";
 import {
   getFormatConfig,
   insertPdfVersion,
+  latestPdfVersion,
   latestRender,
   listCovers,
   nextPdfVersion,
   replaceChecklist,
 } from "../repo/output";
+import { computePreview } from "../preview/build";
+import { parsePages, serializePages } from "../preview/diff";
 import { getOutline, parseOutlineData, saveProposedOutline } from "../repo/outline";
 import { getProject } from "../repo/projects";
 import { addReviewItem, countPendingReviews } from "../repo/review";
@@ -608,6 +611,16 @@ const exportBook: Executor = async (handle, job) => {
   );
   await breathe();
 
+  // The same export also feeds the Stage 6.3 preview viewer and correction
+  // cycle: lay the approved text into pages, QA it and diff against the previous
+  // version, so the preview is seeded from one code path.
+  const previousPdf = latestPdfVersion(db, job.projectId);
+  const preview = computePreview(
+    finalText.content,
+    formatData,
+    parsePages(previousPdf?.pages),
+  );
+
   const version = nextPdfVersion(db, job.projectId);
   const bundleDir = path.join(
     dataDir(),
@@ -678,6 +691,12 @@ const exportBook: Executor = async (handle, job) => {
         `(${info.pageCount} pp, ${checklist.interior.colorMode})` +
         (hasQrCodes ? ", QR print-test reminder" : ""),
       jobId: job.id,
+      pages: serializePages(preview.pages),
+      pageCount: preview.pageCount,
+      sourceTextVersion: finalText.version,
+      kind: "export",
+      qa: JSON.stringify(preview.qa),
+      diff: JSON.stringify(preview.diff),
     });
     appendChange(db, {
       projectId: job.projectId,
