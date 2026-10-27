@@ -1,5 +1,5 @@
 import type { Db } from "./db/client";
-import { getContract, getStyleProfile } from "./repo/editorial";
+import { getConfirmedStyleProfile, getContract } from "./repo/editorial";
 import { listChecklist, listPdfVersions } from "./repo/output";
 import { countPendingReviews } from "./repo/review";
 import { latestText } from "./repo/texts";
@@ -25,9 +25,9 @@ export function canCompleteStage(
         ? { ok: true }
         : { ok: false, reason: "Sign the editorial contract first." };
     case 3:
-      return getStyleProfile(db, projectId)
+      return getConfirmedStyleProfile(db, projectId)
         ? { ok: true }
-        : { ok: false, reason: "Save the style profile first." };
+        : { ok: false, reason: "Confirm the style profile first." };
     case 4:
       return latestText(db, projectId, "passA")
         ? { ok: true }

@@ -63,26 +63,129 @@ export function getStyleProfile(
     .get();
 }
 
-export function saveStyleProfile(
+/**
+ * The profile injected into AI calls: only a profile the user has confirmed
+ * shapes generated text — a fresh draft shapes nothing until confirmed.
+ */
+export function getConfirmedStyleProfile(
   db: Db,
-  input: {
-    projectId: string;
-    tone: string;
-    register: string;
-    person: string;
-    notes: string;
-  },
+  projectId: string,
+): StyleProfile | undefined {
+  const profile = getStyleProfile(db, projectId);
+  return profile?.status === "confirmed" ? profile : undefined;
+}
+
+/** The editable, plain-language part of the profile. */
+export interface StyleProfileFields {
+  tone: string;
+  register: string;
+  person: string;
+  notes: string;
+  voice: string;
+  rhythm: string;
+  punctuation: string;
+  metaphors: string;
+  openings: string;
+  /** 3-5 verbatim few-shot excerpts from the reference material. */
+  excerpts: string[];
+}
+
+/**
+ * Store a freshly extracted profile as a DRAFT for the user to confirm or
+ * adjust. The version is NOT bumped (that happens on confirm) and any earlier
+ * sample passage is cleared — it was generated with the previous profile.
+ */
+export function saveDraftProfile(
+  db: Db,
+  projectId: string,
+  fields: StyleProfileFields,
 ): void {
-  const existing = getStyleProfile(db, input.projectId);
+  const existing = getStyleProfile(db, projectId);
   const ts = now();
+  const values = {
+    ...fields,
+    excerpts: JSON.stringify(fields.excerpts),
+    status: "draft" as const,
+    sample: "",
+    updatedAt: ts,
+  };
   if (existing) {
     db.update(styleProfiles)
-      .set({ ...input, updatedAt: ts })
-      .where(eq(styleProfiles.projectId, input.projectId))
+      .set(values)
+      .where(eq(styleProfiles.projectId, projectId))
       .run();
   } else {
     db.insert(styleProfiles)
-      .values({ ...input, data: "{}", updatedAt: ts })
+      .values({ projectId, data: "{}", ...values })
       .run();
   }
+}
+
+/**
+ * Confirm the profile the user reviewed. The first confirmation is version 1;
+ * confirming again after an earlier confirmation bumps the version, which is
+ * what marks downstream texts as written under an older profile.
+ */
+export function confirmStyleProfile(
+  db: Db,
+  projectId: string,
+  fields: StyleProfileFields,
+): StyleProfile {
+  const existing = getStyleProfile(db, projectId);
+  const ts = now();
+  const version = existing
+    ? existing.confirmedAt
+      ? existing.version + 1
+      : existing.version
+    : 1;
+  const values = {
+    ...fields,
+    excerpts: JSON.stringify(fields.excerpts),
+    status: "confirmed" as const,
+    version,
+    confirmedAt: ts,
+    updatedAt: ts,
+  };
+  if (existing) {
+    db.update(styleProfiles)
+      .set(values)
+      .where(eq(styleProfiles.projectId, projectId))
+      .run();
+  } else {
+    db.insert(styleProfiles)
+      .values({ projectId, data: "{}", ...values })
+      .run();
+  }
+  appendChange(db, {
+    projectId,
+    what: `Style profile v${version} confirmed (${fields.excerpts.length} excerpt(s))`,
+    where: "style profile",
+    why: existing?.confirmedAt
+      ? "user changed the style profile mid-project"
+      : "user confirmed the style profile",
+    authorizedBy: "user",
+  });
+  return getStyleProfile(db, projectId)!;
+}
+
+/** Parse the profile's excerpts column; tolerates nothing — bad JSON is []. */
+export function parseExcerpts(profile: StyleProfile): string[] {
+  try {
+    const arr = JSON.parse(profile.excerpts);
+    return Array.isArray(arr) ? arr.filter((e) => typeof e === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Store the sample passage generated with the current (draft) profile. */
+export function saveSamplePassage(
+  db: Db,
+  projectId: string,
+  sample: string,
+): void {
+  db.update(styleProfiles)
+    .set({ sample, updatedAt: now() })
+    .where(eq(styleProfiles.projectId, projectId))
+    .run();
 }

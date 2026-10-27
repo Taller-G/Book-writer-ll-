@@ -1,12 +1,20 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createAiClient } from "../ai";
 import { dataDir, type DbHandle } from "../db/client";
 import type { Job } from "../db/schema";
 import { appendChange } from "../repo/changeLog";
+import {
+  getStyleProfile,
+  saveDraftProfile,
+  saveSamplePassage,
+  type StyleProfileFields,
+} from "../repo/editorial";
 import { markJobRunning, markJobSucceeded } from "../repo/jobs";
 import { getFormatConfig, insertPdfVersion, nextPdfVersion } from "../repo/output";
 import { addReviewItem, countPendingReviews } from "../repo/review";
 import { listSources } from "../repo/sources";
+import { listStyleRefs } from "../repo/styleRefs";
 import { insertText, latestText, nextTextVersion } from "../repo/texts";
 
 // Baseline deterministic executors — the versioned input/output contract
@@ -295,6 +303,189 @@ const exportBook: Executor = async (handle, job) => {
   })();
 };
 
+// --- Stage 3: style profile extraction and sample generation ------------
+
+/** Cap per reference so a whole book attached as reference stays affordable. */
+const MAX_REF_CHARS = 20_000;
+const SAMPLE_SOURCE_CHARS = 1_500;
+
+const EXTRACT_INSTRUCTIONS = `You are a literary style analyst. Extract a style profile from the reference texts the user provides. Describe each dimension in short plain language a non-technical author understands (e.g. "short sentences, second person, everyday examples, almost no adjectives"), in the language of the references.
+
+Respond with ONLY a JSON object, no prose and no code fences, with exactly these string fields: "voice", "tone", "register" (vocabulary and register), "person" (narrative person), "rhythm" (sentence rhythm), "punctuation" (characteristic punctuation), "metaphors" (use of metaphors and examples), "openings" (how sections open and close), "notes" (anything else that defines the voice) — plus "excerpts": an array of 3 to 5 short passages (1-3 sentences each) copied VERBATIM from the references, chosen as the most representative of the voice.`;
+
+/**
+ * Parse the model's profile JSON strictly. Any shortfall throws — a failed
+ * job with a clear error, never a silent partial profile.
+ */
+function parseProfileJson(text: string): StyleProfileFields {
+  const stripped = text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "");
+  let data: unknown;
+  try {
+    data = JSON.parse(stripped);
+  } catch {
+    throw new Error(
+      "The AI did not return a valid style profile (unparseable response). " +
+        "Run the extraction again.",
+    );
+  }
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    throw new Error(
+      "The AI did not return a valid style profile (not a JSON object). " +
+        "Run the extraction again.",
+    );
+  }
+  const d = data as Record<string, unknown>;
+  const field = (key: string) => (typeof d[key] === "string" ? (d[key] as string) : "");
+  const excerpts = Array.isArray(d.excerpts)
+    ? d.excerpts.filter((e): e is string => typeof e === "string" && e.trim() !== "")
+    : [];
+  const fields: StyleProfileFields = {
+    voice: field("voice"),
+    tone: field("tone"),
+    register: field("register"),
+    person: field("person"),
+    rhythm: field("rhythm"),
+    punctuation: field("punctuation"),
+    metaphors: field("metaphors"),
+    openings: field("openings"),
+    notes: field("notes"),
+    excerpts: excerpts.slice(0, 5),
+  };
+  const traitCount = [
+    fields.voice,
+    fields.tone,
+    fields.register,
+    fields.person,
+    fields.rhythm,
+    fields.punctuation,
+    fields.metaphors,
+    fields.openings,
+  ].filter((v) => v.trim() !== "").length;
+  if (traitCount < 4 || fields.excerpts.length === 0) {
+    throw new Error(
+      "The AI returned an incomplete style profile " +
+        `(${traitCount}/8 traits, ${fields.excerpts.length} excerpt(s)). ` +
+        "Nothing was saved — run the extraction again.",
+    );
+  }
+  return fields;
+}
+
+const extractStyle: Executor = async (handle, job) => {
+  const { db, sqlite } = handle;
+  const refs = listStyleRefs(db, job.projectId);
+  if (refs.length === 0) {
+    throw new JobInputError(
+      "No reference files attached. Add at least one reference (txt, md, pdf, docx) " +
+        "whose style the profile should capture.",
+    );
+  }
+  markJobRunning(
+    db,
+    job.id,
+    { refIds: refs.map((r) => r.id), refCount: refs.length },
+    1,
+  );
+  const material = refs
+    .map((r) => {
+      const text =
+        r.content.length > MAX_REF_CHARS
+          ? r.content.slice(0, MAX_REF_CHARS) + "\n[truncated]"
+          : r.content;
+      return `### Reference: ${r.name}\n\n${text}`;
+    })
+    .join("\n\n");
+  const ai = createAiClient(db);
+  const response = await ai.complete({
+    role: "large",
+    // bare: the extraction reads the references with fresh eyes — it must not
+    // be shaped by a previous profile or the editorial contract.
+    system: { instructions: EXTRACT_INSTRUCTIONS, bare: true },
+    messages: [{ role: "user", content: material }],
+    maxTokens: 2000,
+    projectId: job.projectId,
+    jobId: job.id,
+  });
+  const fields = parseProfileJson(response.text);
+  sqlite.transaction(() => {
+    saveDraftProfile(db, job.projectId, fields);
+    appendChange(db, {
+      projectId: job.projectId,
+      what: `Style profile draft extracted from ${refs.length} reference(s) (${fields.excerpts.length} excerpts)`,
+      where: "style profile",
+      why: "AI extraction over the attached reference files",
+      authorizedBy: `job ${job.type} (${job.id})`,
+    });
+    markJobSucceeded(
+      db,
+      job.id,
+      { status: "draft", excerpts: fields.excerpts.length, model: response.model },
+      1,
+    );
+  })();
+};
+
+const styleSample: Executor = async (handle, job) => {
+  const { db, sqlite } = handle;
+  const profile = getStyleProfile(db, job.projectId);
+  if (!profile) {
+    throw new JobInputError(
+      "There is no style profile yet. Extract one from references (or fill the form) first.",
+    );
+  }
+  const raw = latestText(db, job.projectId, "raw");
+  const source = listSources(db, job.projectId).find((s) => s.content.trim() !== "");
+  const material = raw?.content ?? source?.content;
+  if (!material) {
+    throw new JobInputError(
+      "No project material to sample. Add sources in Stage 1 — the sample rewrites " +
+        "a passage of your own text with the profile.",
+    );
+  }
+  markJobRunning(
+    db,
+    job.id,
+    { from: raw ? `raw v${raw.version}` : `source "${source!.title}"` },
+    1,
+  );
+  // Cut at a paragraph boundary so the model gets a coherent passage.
+  let passage = material.slice(0, SAMPLE_SOURCE_CHARS);
+  const lastBreak = passage.lastIndexOf("\n\n");
+  if (lastBreak > SAMPLE_SOURCE_CHARS / 2) passage = passage.slice(0, lastBreak);
+  const ai = createAiClient(db);
+  const response = await ai.complete({
+    role: "large",
+    system: {
+      instructions:
+        "Rewrite the passage below applying the style profile, so the author can judge " +
+        "the profile on their own material before it is applied to the whole book. " +
+        "Keep the content and meaning; change only how it is written. " +
+        "Respond with the rewritten passage only.",
+      // Explicit: the sample must use the profile under review even while
+      // it is still a draft (auto-injection only carries confirmed profiles).
+      styleProfile: profile,
+    },
+    messages: [{ role: "user", content: passage }],
+    maxTokens: 1500,
+    projectId: job.projectId,
+    jobId: job.id,
+  });
+  sqlite.transaction(() => {
+    saveSamplePassage(db, job.projectId, response.text.trim());
+    appendChange(db, {
+      projectId: job.projectId,
+      what: `Sample passage generated with style profile (${profile.status})`,
+      where: "style profile",
+      why: "preview the profile on the project's own material before confirming",
+      authorizedBy: `job ${job.type} (${job.id})`,
+    });
+    markJobSucceeded(db, job.id, { sampleChars: response.text.length }, 1);
+  })();
+};
+
 function escapeHtml(s: string): string {
   return s
     .replaceAll("&", "&amp;")
@@ -304,6 +495,8 @@ function escapeHtml(s: string): string {
 
 export const EXECUTORS: Record<string, Executor> = {
   ingest_sources: ingestSources,
+  extract_style: extractStyle,
+  style_sample: styleSample,
   cleanup_pass_a: cleanupPassA,
   refine_pass_b: refinePassB,
   finalize_text: finalizeText,

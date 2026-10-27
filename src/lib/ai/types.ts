@@ -12,6 +12,12 @@ export interface SystemContext {
   instructions: string;
   contract?: EditorialContract;
   styleProfile?: StyleProfile;
+  /**
+   * Opt out of the automatic injection of the project's contract and
+   * confirmed style profile. Reserved for calls that must not be shaped by
+   * the project voice — extracting the style profile itself.
+   */
+  bare?: boolean;
 }
 
 export interface AiMessage {
@@ -49,6 +55,15 @@ export interface AiClient {
   complete(request: AiRequest): Promise<AiResponse>;
 }
 
+function safeParseExcerpts(json: string): string[] {
+  try {
+    const arr: unknown = JSON.parse(json);
+    return Array.isArray(arr) ? arr.filter((e) => typeof e === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Render the system-context payload into one system prompt string. */
 export function buildSystemPrompt(system: SystemContext): string {
   const parts = [system.instructions.trim()];
@@ -60,10 +75,32 @@ export function buildSystemPrompt(system: SystemContext): string {
   }
   if (system.styleProfile) {
     const s = system.styleProfile;
+    const traits: Array<[label: string, value: string]> = [
+      ["voice", s.voice],
+      ["tone", s.tone],
+      ["register and vocabulary", s.register],
+      ["narrative person", s.person],
+      ["sentence rhythm", s.rhythm],
+      ["punctuation", s.punctuation],
+      ["metaphors and examples", s.metaphors],
+      ["how sections open and close", s.openings],
+    ];
+    const lines = traits
+      .filter(([, value]) => value.trim() !== "")
+      .map(([label, value]) => `- ${label}: ${value}`);
     parts.push(
-      `Style profile — tone: ${s.tone}; register: ${s.register}; ` +
-        `person: ${s.person}. Notes:\n${s.notes}`,
+      `Style profile (v${s.version}) — every piece of generated text must keep this voice:\n` +
+        lines.join("\n") +
+        (s.notes.trim() ? `\nNotes:\n${s.notes}` : ""),
     );
+    const excerpts = safeParseExcerpts(s.excerpts);
+    if (excerpts.length > 0) {
+      parts.push(
+        "Representative excerpts of the target voice. Match how they sound " +
+          "(rhythm, register, punctuation), never copy their content:\n\n" +
+          excerpts.map((e, i) => `Excerpt ${i + 1}:\n${e}`).join("\n\n"),
+      );
+    }
   }
   return parts.filter(Boolean).join("\n\n");
 }

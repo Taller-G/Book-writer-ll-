@@ -42,8 +42,9 @@ export const STAGES: StageDef[] = [
     title: "Style profile",
     short: "Capture the voice",
     description:
-      "Define tone, register and narrative person so cleanup and refinement " +
-      "preserve the author's voice instead of flattening it.",
+      "Attach reference texts and let the AI propose the voice — or write it " +
+      "yourself — then confirm it. The confirmed profile is injected into " +
+      "every AI call in every later stage.",
   },
   {
     num: 4,

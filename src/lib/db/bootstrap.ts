@@ -61,8 +61,34 @@ CREATE TABLE IF NOT EXISTS style_profiles (
   person TEXT NOT NULL DEFAULT '',
   notes TEXT NOT NULL DEFAULT '',
   data TEXT NOT NULL DEFAULT '{}',
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Extracted trait fields, shown in plain language for the user to adjust.
+  voice TEXT NOT NULL DEFAULT '',
+  rhythm TEXT NOT NULL DEFAULT '',
+  punctuation TEXT NOT NULL DEFAULT '',
+  metaphors TEXT NOT NULL DEFAULT '',
+  openings TEXT NOT NULL DEFAULT '',
+  -- JSON array of 3-5 verbatim few-shot excerpts from the reference texts.
+  excerpts TEXT NOT NULL DEFAULT '[]',
+  -- A draft (fresh extraction) shapes nothing until the user confirms it.
+  status TEXT NOT NULL DEFAULT 'confirmed' CHECK (status IN ('draft','confirmed')),
+  version INTEGER NOT NULL DEFAULT 1,
+  confirmed_at TEXT,
+  sample TEXT NOT NULL DEFAULT ''
 );
+
+-- Reference files attached for style extraction (an author's chapters, the
+-- user's own writing, a house style). Extracted text only: these are inputs
+-- to the profile, not book material.
+CREATE TABLE IF NOT EXISTS style_refs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  content TEXT NOT NULL,
+  word_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_style_refs_project ON style_refs(project_id);
 
 -- Versioned text snapshots per pipeline stage: raw -> passA -> passB -> final.
 CREATE TABLE IF NOT EXISTS stage_texts (
@@ -73,6 +99,10 @@ CREATE TABLE IF NOT EXISTS stage_texts (
   content TEXT NOT NULL,
   job_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Confirmed style profile version in force when this text was produced;
+  -- NULL when no profile existed yet. Drives the regenerate/keep offer after
+  -- a mid-project profile change.
+  style_profile_version INTEGER,
   UNIQUE (project_id, stage_key, version)
 );
 
@@ -192,6 +222,9 @@ CREATE TABLE IF NOT EXISTS ai_usage (
   prompt_tokens INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
   cost_usd REAL NOT NULL DEFAULT 0,
+  -- Full system prompt sent with the call, so the call log is verifiable:
+  -- the injected contract, style profile and excerpts are checkable per call.
+  system_prompt TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_ai_usage_project ON ai_usage(project_id);
@@ -211,28 +244,47 @@ INSERT OR IGNORE INTO user_prefs (id) VALUES (1);
 // Columns added after first release. CREATE TABLE IF NOT EXISTS skips
 // existing databases, so new columns must also be applied via ALTER TABLE,
 // guarded by a pragma check to stay idempotent.
-const SOURCE_FILE_COLUMNS: Array<[name: string, type: string]> = [
-  ["media_type", "TEXT"],
-  ["original_name", "TEXT"],
-  ["original_path", "TEXT"],
-  ["mime_type", "TEXT"],
-  ["size_bytes", "INTEGER"],
-  ["checksum_sha1", "TEXT"],
-  ["duration_seconds", "REAL"],
-  ["language", "TEXT"],
-  ["word_count", "INTEGER"],
-  ["linked_source_id", "TEXT"],
-];
+const ADDED_COLUMNS: Record<string, Array<[name: string, type: string]>> = {
+  sources: [
+    ["media_type", "TEXT"],
+    ["original_name", "TEXT"],
+    ["original_path", "TEXT"],
+    ["mime_type", "TEXT"],
+    ["size_bytes", "INTEGER"],
+    ["checksum_sha1", "TEXT"],
+    ["duration_seconds", "REAL"],
+    ["language", "TEXT"],
+    ["word_count", "INTEGER"],
+    ["linked_source_id", "TEXT"],
+  ],
+  // Existing manually-saved profiles count as confirmed v1.
+  style_profiles: [
+    ["voice", "TEXT NOT NULL DEFAULT ''"],
+    ["rhythm", "TEXT NOT NULL DEFAULT ''"],
+    ["punctuation", "TEXT NOT NULL DEFAULT ''"],
+    ["metaphors", "TEXT NOT NULL DEFAULT ''"],
+    ["openings", "TEXT NOT NULL DEFAULT ''"],
+    ["excerpts", "TEXT NOT NULL DEFAULT '[]'"],
+    ["status", "TEXT NOT NULL DEFAULT 'confirmed'"],
+    ["version", "INTEGER NOT NULL DEFAULT 1"],
+    ["confirmed_at", "TEXT"],
+    ["sample", "TEXT NOT NULL DEFAULT ''"],
+  ],
+  stage_texts: [["style_profile_version", "INTEGER"]],
+  ai_usage: [["system_prompt", "TEXT NOT NULL DEFAULT ''"]],
+};
 
-function addMissingSourceColumns(db: Database): void {
-  const existing = new Set(
-    (db.pragma("table_info(sources)") as Array<{ name: string }>).map(
-      (c) => c.name,
-    ),
-  );
-  for (const [name, type] of SOURCE_FILE_COLUMNS) {
-    if (!existing.has(name)) {
-      db.exec(`ALTER TABLE sources ADD COLUMN ${name} ${type}`);
+function addMissingColumns(db: Database): void {
+  for (const [table, columns] of Object.entries(ADDED_COLUMNS)) {
+    const existing = new Set(
+      (db.pragma(`table_info(${table})`) as Array<{ name: string }>).map(
+        (c) => c.name,
+      ),
+    );
+    for (const [name, type] of columns) {
+      if (!existing.has(name)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+      }
     }
   }
 }
@@ -241,7 +293,7 @@ export function applyBootstrap(db: Database): void {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(DDL);
-  addMissingSourceColumns(db);
+  addMissingColumns(db);
   // A server crash mid-job leaves 'running'/'queued' rows behind with no
   // worker attached. Surface them as failed-and-retryable instead of
   // forever-running.

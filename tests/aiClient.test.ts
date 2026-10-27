@@ -47,6 +47,16 @@ const REQUEST: AiRequest = {
       notes: "",
       data: "{}",
       updatedAt: "",
+      voice: "close and conversational",
+      rhythm: "short sentences",
+      punctuation: "almost no semicolons",
+      metaphors: "everyday examples",
+      openings: "sections open with a question",
+      excerpts: JSON.stringify(["La primera vez que lo vi, no dije nada."]),
+      status: "confirmed",
+      version: 1,
+      confirmedAt: "",
+      sample: "",
     },
   },
   messages: [{ role: "user", content: "hola um este mundo" }],
@@ -117,7 +127,12 @@ describe("OpenRouter AI client", () => {
     expect(body.model).toBe("anthropic/claude-sonnet-4.6");
     expect(body.messages[0].role).toBe("system");
     expect(body.messages[0].content).toContain("Editorial contract (mode: hybrid)");
-    expect(body.messages[0].content).toContain("Style profile — tone: warm");
+    expect(body.messages[0].content).toContain("Style profile (v1)");
+    expect(body.messages[0].content).toContain("- tone: warm");
+    expect(body.messages[0].content).toContain("- sentence rhythm: short sentences");
+    expect(body.messages[0].content).toContain(
+      "La primera vez que lo vi, no dije nada.",
+    );
     // The key is never placed in the request body.
     expect(String(calls[0].init.body)).not.toContain(TEST_KEY);
   });
