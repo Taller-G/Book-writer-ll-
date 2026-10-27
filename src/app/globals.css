@@ -678,3 +678,56 @@ details.card > summary {
   margin: 0.2rem 0 0;
   font-size: 0.8rem;
 }
+
+/* Review queue — the unified inbox */
+.progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #efedea;
+  overflow: hidden;
+  margin-top: 0.5rem;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+.review-chip {
+  display: inline-block;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  background: #efedea;
+  color: var(--muted);
+}
+.review-card .doubt-context {
+  background: #faf9f6;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  line-height: 1.6;
+}
+.review-card .doubt-context mark {
+  background: var(--amber-soft);
+  color: var(--amber);
+  padding: 0 0.15rem;
+  border-radius: 3px;
+}
+.review-actions {
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+.free-text-form {
+  gap: 0.3rem;
+  align-items: center;
+}
+.clip-player {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.4rem 0;
+}
+.clip-player audio {
+  width: 100%;
+}

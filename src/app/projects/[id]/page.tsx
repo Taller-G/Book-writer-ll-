@@ -57,8 +57,11 @@ export default async function ProjectOverviewPage({
           <strong>Next:</strong> {nextAction}
         </p>
         <p className="muted">
-          {overview.sourceCount} source(s) · {overview.changeCount} audit log
-          entries · {overview.pendingReviews} pending review(s) ·{" "}
+          {overview.sourceCount} source(s) ·{" "}
+          <Link href={`/projects/${project.id}/changelog`} data-testid="changelog-link">
+            {overview.changeCount} audit log entries
+          </Link>{" "}
+          · {overview.pendingReviews} pending review(s) ·{" "}
           <span data-testid="ai-spend">AI spend: {formatUsd(aiSpend)}</span>
           {overview.latestJob &&
             ` · last job: ${overview.latestJob.type} (${overview.latestJob.status})`}

@@ -77,6 +77,15 @@ export function textsUnderOldProfile(
   return stale;
 }
 
+/**
+ * Edit the content of an existing text in place. Used when a review resolution
+ * is applied to the working text — the change itself is recorded in the
+ * append-only change log, so the edit is auditable even though the row mutates.
+ */
+export function updateTextContent(db: Db, textId: string, content: string): void {
+  db.update(stageTexts).set({ content }).where(eq(stageTexts.id, textId)).run();
+}
+
 /** The user chose to keep a text written under an older profile. */
 export function stampTextProfileVersion(
   db: Db,

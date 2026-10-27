@@ -94,7 +94,7 @@ describe("stage-closing verification and the FINAL lock (stage 3.6)", () => {
       question: "Dos fechas distintas para el mismo evento.",
     });
     expect((await run("finalize_text")).status).toBe("failed");
-    resolveReviewItem(handle.db, item.id, "accepted");
+    resolveReviewItem(handle.db, item!.id, "accepted");
     expect(listReviewItems(handle.db, projectId).every((i) => i.status !== "pending")).toBe(true);
     expect((await run("finalize_text")).status).toBe("succeeded");
   });

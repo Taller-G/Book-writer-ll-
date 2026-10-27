@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createAiClient, type AiClient } from "../ai";
+import { AiAuthError, createAiClient, type AiClient } from "../ai";
 import { destinationOption, TONES } from "../contract/definitions";
 import { dataDir, type Db, type DbHandle } from "../db/client";
 import type { EditorialContract, Job, StyleProfile } from "../db/schema";
+import { countWords } from "../ingest/extract";
 import { readOriginal, writeDerived } from "../files/store";
 import {
   applyPassB,
@@ -33,15 +34,37 @@ import {
   saveStyleSample,
   type StyleProfileFields,
 } from "../repo/editorial";
+import {
+  buildPrintChecklist,
+  checklistItemLabels,
+  recommendBinding,
+  renderChecklistMarkdown,
+  type PrintChecklistInput,
+} from "../export/checklist";
+import { readPdfInfo } from "../export/pdfInfo";
+import { toCmykPressPdf } from "../export/pdfx";
+import { detectQrCodes } from "../export/qr";
+import { failingChecks, qaCheck, readQaReport } from "../export/qaReport";
+import { getPageSize, parseFormatData } from "../format/config";
 import { markJobRunning, markJobSucceeded } from "../repo/jobs";
 import { ensureRules } from "../repo/normalization";
-import { getFormatConfig, insertPdfVersion, nextPdfVersion } from "../repo/output";
+import {
+  getFormatConfig,
+  insertPdfVersion,
+  latestPdfVersion,
+  latestRender,
+  listCovers,
+  nextPdfVersion,
+  replaceChecklist,
+} from "../repo/output";
+import { computePreview } from "../preview/build";
+import { parsePages, serializePages } from "../preview/diff";
 import { getOutline, parseOutlineData, saveProposedOutline } from "../repo/outline";
 import { assertUnlocked, isLocked, lockText } from "../repo/locks";
 import { getProject } from "../repo/projects";
 import { addReaction, confirmedReactions } from "../repo/reactions";
 import { addReviewItem, countPendingReviews } from "../repo/review";
-import { getSource, listSources } from "../repo/sources";
+import { getSource, listSources, saveTranscription } from "../repo/sources";
 import {
   aiSemanticChecker,
   findReactionCandidates,
@@ -51,7 +74,16 @@ import { decodeWav, sliceClipWav, type DecodedAudio } from "../reactions/wav";
 import { listStyleRefs } from "../repo/styleRefs";
 import { insertText, latestText, nextTextVersion } from "../repo/texts";
 import { renderBook } from "../render/render";
-import { newId } from "../util";
+import { createTranscriptionClient } from "../transcription/asr";
+import {
+  applyCorrections,
+  CORRECTION_TYPE_LABELS,
+  parseProposedCorrections,
+  verifyDiffMatchesCorrections,
+  type ApplyResult,
+  type Correction,
+} from "../transcription/corrections";
+import { newId, now } from "../util";
 
 // Baseline deterministic executors — the versioned input/output contract
 // other work orders replace with Claude-powered implementations. An executor
@@ -105,6 +137,80 @@ const ingestSources: Executor = async (handle, job) => {
       authorizedBy: `job ${job.type} (${job.id})`,
     });
     markJobSucceeded(db, job.id, { stageTextId: text.id, stageKey: "raw" }, version);
+  })();
+};
+
+// Stage 3.1: automatic transcription of audio sources via the hosted ASR
+// seam. Transcribes every audio/video source that still has no text, in one
+// async job, with word-level timestamps stored on each source. The ASR work
+// (slow, network) happens before a single commit transaction per source.
+const transcribeAudio: Executor = async (handle, job) => {
+  const { db, sqlite } = handle;
+  const pending = listSources(db, job.projectId).filter(
+    (s) =>
+      (s.mediaType === "audio" || s.mediaType === "video") &&
+      !!s.originalPath &&
+      s.content.trim() === "",
+  );
+  if (pending.length === 0) {
+    throw new JobInputError(
+      "No audio to transcribe — upload a recording whose transcript you don't " +
+        "already have, or paste the transcript in as a text source.",
+    );
+  }
+  markJobRunning(
+    db,
+    job.id,
+    {
+      sourceIds: pending.map((s) => s.id),
+      total: pending.length,
+      titles: pending.map((s) => s.title),
+    },
+    1,
+  );
+  const client = createTranscriptionClient();
+  const done: Array<{ id: string; title: string; words: number; model: string }> = [];
+  for (const source of pending) {
+    const audio = readOriginal(source.originalPath!);
+    const result = await client.transcribe({
+      audio,
+      mimeType: source.mimeType ?? "application/octet-stream",
+      filename: source.originalName ?? `${source.title}.audio`,
+      language: source.language,
+    });
+    const wordCount = countWords(result.text);
+    sqlite.transaction(() => {
+      saveTranscription(db, source.id, {
+        content: result.text,
+        wordCount,
+        language: result.language,
+        words: result.words,
+        model: result.model,
+        provider: "asr",
+        transcribedAt: now(),
+      });
+      appendChange(db, {
+        projectId: job.projectId,
+        what: `Transcribed recording "${source.title}" (${wordCount} words, ${result.words.length} word-level timestamps, model ${result.model})`,
+        where: "stage 1 · transcription",
+        why: "automatic speech recognition of an uploaded recording",
+        authorizedBy: `job ${job.type} (${job.id})`,
+      });
+    })();
+    done.push({
+      id: source.id,
+      title: source.title,
+      words: wordCount,
+      model: result.model,
+    });
+  }
+  sqlite.transaction(() => {
+    markJobSucceeded(
+      db,
+      job.id,
+      { transcribed: done, count: done.length },
+      1,
+    );
   })();
 };
 
@@ -263,6 +369,62 @@ function requireContract(db: DbHandle["db"], projectId: string) {
   return contract;
 }
 
+const PASS_A_MAX_TOKENS = 4000;
+
+/** Pass A correction-proposal instructions: ONLY transcription-software noise. */
+function passAInstructions(mode: string): string {
+  return (
+    "You correct transcription-software noise in an audio-book transcript. " +
+    "Find ONLY errors the transcription software made, and return them as corrections. " +
+    "You must NOT rephrase, improve, shorten, reorder or edit the author's words in any " +
+    `way — that is strictly forbidden by the editorial contract (${mode} mode). ` +
+    "Every correction MUST be exactly one of these classes:\n" +
+    '- ASR: a misheard word or phrase (e.g. "Tu shé" heard instead of "Touché")\n' +
+    "- NOM: a proper name the transcriber spelled wrong\n" +
+    "- REC: a systematic transcriber pattern (a recurring mis-transcription)\n" +
+    '- NORM: a number written as pronounced that should be digits (e.g. "twenty twenty five" -> "2025")\n\n' +
+    "Respond with ONLY a JSON array (no prose, no code fences). Each element is an object with string " +
+    'fields "type" (ASR|NOM|REC|NORM), "original" (the EXACT text as it appears in the transcript, copied ' +
+    'verbatim so it can be found and replaced), "correction" (the fixed text), "justification" (why this is a ' +
+    'transcription error and not an edit), and an optional number "position". Return [] if there are none.'
+  );
+}
+
+/**
+ * Ask the AI to propose structured transcription-noise corrections. When no
+ * AI key is configured the pass still runs: it skips the correction phase and
+ * falls back to the deterministic mechanical cleanup only.
+ */
+async function proposePassACorrections(
+  db: Db,
+  job: Job,
+  text: string,
+  mode: string,
+): Promise<{
+  proposal: ReturnType<typeof parseProposedCorrections> | null;
+  skipReason?: string;
+}> {
+  let client: AiClient;
+  try {
+    client = aiFactory(db);
+  } catch (e) {
+    if (e instanceof AiAuthError) return { proposal: null, skipReason: e.message };
+    throw e;
+  }
+  const response = await client.complete({
+    role: "fast",
+    // bare: the proposal must spot raw transcription noise, not be shaped by
+    // the project voice; the faithful rule is stated in the instructions and
+    // enforced structurally by the correction engine regardless.
+    system: { instructions: passAInstructions(mode), bare: true },
+    messages: [{ role: "user", content: text }],
+    maxTokens: PASS_A_MAX_TOKENS,
+    projectId: job.projectId,
+    jobId: job.id,
+  });
+  return { proposal: parseProposedCorrections(response.text) };
+}
+
 const cleanupPassA: Executor = async (handle, job) => {
   const { db, sqlite } = handle;
   const raw = latestText(db, job.projectId, "raw");
@@ -284,8 +446,49 @@ const cleanupPassA: Executor = async (handle, job) => {
     },
     raw.version,
   );
+
+  // --- Phase 1: AI proposes transcription-noise corrections ----------------
+  const { proposal, skipReason } = await proposePassACorrections(
+    db,
+    job,
+    raw.content,
+    contract.mode,
+  );
+
+  // --- Phase 2: apply with programmatic verification -----------------------
+  // Every proposal is checked against the faithful contract and the
+  // exactly-once rule; anything unverifiable goes to the doubtful queue, never
+  // silently into the text.
+  const correctionResult: ApplyResult = proposal
+    ? applyCorrections(raw.content, proposal.valid, contract.mode)
+    : { output: raw.content, applied: [], doubtful: [], rejected: [] };
+  const rejected = [
+    ...(proposal?.rejected ?? []),
+    ...correctionResult.rejected,
+  ];
+  const corrected = correctionResult.output;
+
+  // --- Phase 3: hard proof — corrected == raw + exactly the applied changes
+  const verdict = verifyDiffMatchesCorrections(
+    raw.content,
+    corrected,
+    correctionResult.applied,
+  );
+  if (!verdict.ok) {
+    throw new Error(
+      "Pass A aborted: the corrected text does not match the logged corrections " +
+        `(word-level diff mismatch). ${verdict.problems.join(" ")}`,
+    );
+  }
+
+  // --- Phase 4: deterministic mechanical cleanup (spacing, punctuation; and
+  // filler removal only where the contract allows rewrites) on top.
   await breathe();
-  const { output, changes, blocked } = cleanupTransform(raw.content, allowRewrites);
+  const { output, changes, blocked } = cleanupTransform(corrected, allowRewrites);
+
+  const label = (c: Correction) =>
+    `${CORRECTION_TYPE_LABELS[c.type]} (${c.type})`;
+
   sqlite.transaction(() => {
     const version = nextTextVersion(db, job.projectId, "passA");
     const text = insertText(db, {
@@ -295,6 +498,47 @@ const cleanupPassA: Executor = async (handle, job) => {
       content: output,
       jobId: job.id,
     });
+    // Applied noise corrections — one attributed, classified audit row each.
+    for (const c of correctionResult.applied) {
+      appendChange(db, {
+        projectId: job.projectId,
+        what: `Corrected "${c.original}" → "${c.correction}" [${label(c)}]`,
+        where: "stage 4 · passA · transcription noise",
+        why: c.justification || "transcription-software error corrected",
+        authorizedBy: `job ${job.type} (${job.id})`,
+        category: c.type,
+      });
+    }
+    // Unverifiable proposals → the doubtful queue (review_queue), plus a note.
+    for (const d of correctionResult.doubtful) {
+      addReviewItem(db, {
+        projectId: job.projectId,
+        itemType: "transcription",
+        excerpt: d.correction.original,
+        question:
+          `Transcription fix "${d.correction.original}" → "${d.correction.correction}" ` +
+          `[${label(d.correction)}] was not auto-applied: ${d.reason}`,
+      });
+      appendChange(db, {
+        projectId: job.projectId,
+        what: `Doubtful correction queued for review: "${d.correction.original}" → "${d.correction.correction}" [${label(d.correction)}]`,
+        where: "stage 4 · passA · doubtful queue",
+        why: d.reason,
+        authorizedBy: `job ${job.type} (${job.id})`,
+        category: d.correction.type,
+      });
+    }
+    // Rejected proposals — edits the faithful contract refused, on the record.
+    for (const r of rejected) {
+      appendChange(db, {
+        projectId: job.projectId,
+        what: `Rejected proposed edit "${r.correction.original}" → "${r.correction.correction}"`,
+        where: "stage 4 · passA · blocked by contract",
+        why: r.reason,
+        authorizedBy: `job ${job.type} (${job.id})`,
+      });
+    }
+    // Deterministic mechanical cleanup changes (and verbatim-blocked fillers).
     for (const c of changes) {
       appendChange(db, {
         projectId: job.projectId,
@@ -315,9 +559,14 @@ const cleanupPassA: Executor = async (handle, job) => {
     }
     appendChange(db, {
       projectId: job.projectId,
-      what: `Cleanup Pass A produced passA v${version} from raw v${raw.version} (${changes.length} change group(s), ${blocked.length} blocked by contract)`,
+      what:
+        `Cleanup Pass A produced passA v${version} from raw v${raw.version}: ` +
+        `${correctionResult.applied.length} noise correction(s) applied, ` +
+        `${correctionResult.doubtful.length} doubtful, ${rejected.length} rejected; ` +
+        `${changes.length} mechanical change group(s), ${blocked.length} blocked by contract` +
+        (skipReason ? " (AI correction skipped: no AI key configured)" : ""),
       where: "stage 4 · passA text",
-      why: "first cleanup pass over the transcription",
+      why: "transcription-noise correction pass over the raw transcript",
       authorizedBy: `job ${job.type} (${job.id})`,
     });
     markJobSucceeded(
@@ -326,9 +575,14 @@ const cleanupPassA: Executor = async (handle, job) => {
       {
         stageTextId: text.id,
         stageKey: "passA",
+        corrections: correctionResult.applied.length,
+        doubtful: correctionResult.doubtful.length,
+        rejected: rejected.length,
+        diffVerified: verdict.ok,
         changeGroups: changes.length,
         blockedByContract: blocked.length,
         contractVersion: contract.version,
+        aiCorrectionSkipped: skipReason ?? null,
       },
       version,
     );
@@ -433,7 +687,9 @@ const refinePassB: Executor = async (handle, job) => {
       addReviewItem(db, {
         projectId: job.projectId,
         itemType: "question",
+        stageKey: "passB",
         excerpt: q.excerpt,
+        doubtfulText: q.excerpt,
         question:
           "Is this an interviewer's question or the speaker's own rhetorical " +
           "question? It was left unformatted pending your decision.",
@@ -700,6 +956,15 @@ const renderPdf: Executor = async (handle, job) => {
   })();
 };
 
+// Stage 8 export: assembles the print-shop deliverables from the QA-passed
+// Stage 7 render. It refuses to run while the latest render's QA report has any
+// failing check (naming them), and every checklist value — page count, embedded
+// fonts, image resolution — is read off the actual compiled PDF and its report,
+// never off the project config. The deliverable bundle is a copied interior
+// PDF, an auto-generated print-shop checklist + one-line summary, an optional
+// CMYK/PDF-X variant for print destinations, and the cover spread when one is
+// attached (otherwise flagged pending). A book that contains QR codes carries a
+// print-test reminder.
 const exportBook: Executor = async (handle, job) => {
   const { db, sqlite } = handle;
   const finalText = latestText(db, job.projectId, "final");
@@ -708,80 +973,185 @@ const exportBook: Executor = async (handle, job) => {
       "There is no FINAL text to export. Finalize the text in Review first.",
     );
   }
+  const render = latestRender(db, job.projectId);
+  if (!render || !render.qaReportPath) {
+    throw new JobInputError(
+      "There is no typeset PDF to export. Render the QA-checked PDF in Stage 7 (Format) first.",
+    );
+  }
+  // Honour the QA report already on record: a failing report blocks the export,
+  // naming every defect so the author knows exactly what to fix and where.
+  const qa = readQaReport(render.qaReportPath);
+  const failing = failingChecks(qa);
+  if (!qa.passed || failing.length > 0 || render.qaPassed !== 1) {
+    const reasons = failing.map(
+      (c) =>
+        `- ${c.title}${c.pages.length ? ` (page(s) ${c.pages.join(", ")})` : ""}: ${c.detail}`,
+    );
+    throw new JobInputError(
+      `Export blocked — the QA report for PDF v${render.version} has ${failing.length} failing check(s):\n` +
+        reasons.join("\n") +
+        "\nRe-render in Stage 7 until QA passes, then export.",
+    );
+  }
+
+  const project = getProject(db, job.projectId);
+  if (!project) throw new JobInputError("Project not found.");
   const format = getFormatConfig(db, job.projectId);
-  // The contract's destination decides the legal page, the ISBN placeholder
-  // and the color profile of the export.
+  const formatData = parseFormatData(format.data);
+  // The contract's destination decides the colour space (and thus whether a
+  // PDF/X variant is required).
   const contract = getContract(db, job.projectId);
   const destination = contract?.destination
     ? destinationOption(contract.destination)
     : undefined;
+  const colorMode = destination?.colorProfile ?? "sRGB";
+
+  // Page count straight off the compiled PDF — never estimated from the config.
+  const info = readPdfInfo(render.filePath);
+  const fontsCheck = qaCheck(qa, "fonts_embedded");
+  const imageCheck = qaCheck(qa, "image_dpi");
+  const hasQrCodes = detectQrCodes(finalText.content);
+  const selectedCover = listCovers(db, job.projectId).find(
+    (c) => c.selected === 1 && c.filePath,
+  );
+
   markJobRunning(
     db,
     job.id,
     {
       stageKey: "final",
       version: finalText.version,
-      trimSize: format.trimSize,
-      contractVersion: contract?.version,
-      destination: contract?.destination,
-      colorProfile: destination?.colorProfile,
+      fromRenderVersion: render.version,
+      pageCount: info.pageCount,
+      colorProfile: colorMode,
+      hasQrCodes,
     },
     finalText.version,
   );
   await breathe();
-  const version = nextPdfVersion(db, job.projectId);
-  const dir = path.join(dataDir(), "exports", job.projectId);
-  fs.mkdirSync(dir, { recursive: true });
-  const filePath = path.join(dir, `book-v${version}.html`);
-  const legalBlocks: string[] = [];
-  if (contract?.legalText.trim()) {
-    legalBlocks.push(
-      ...contract.legalText
-        .split(/\n\n+/)
-        .map((p) => `<p>${escapeHtml(p.trim())}</p>`),
-    );
-  }
-  if (destination?.needsIsbn && !/ISBN/i.test(contract?.legalText ?? "")) {
-    legalBlocks.push(`<p>ISBN: ___-__-_____-__-_ (to be assigned)</p>`);
-  }
-  const frontMatter =
-    legalBlocks.length > 0
-      ? `<section class="legal">${legalBlocks.join("\n")}</section>\n<hr>\n`
-      : "";
-  const body = finalText.content
-    .split(/\n\n+/)
-    .map((p) =>
-      p.startsWith("## ")
-        ? `<h2>${escapeHtml(p.slice(3))}</h2>`
-        : `<p>${escapeHtml(p)}</p>`,
-    )
-    .join("\n");
-  fs.writeFileSync(
-    filePath,
-    `<!doctype html><html><head><meta charset="utf-8"><title>Export v${version}</title>
-${destination ? `<meta name="color-profile" content="${destination.colorProfile}">\n` : ""}<style>body{font-family:${format.fontFamily},serif;font-size:${format.fontSizePt}pt;line-height:${format.lineHeight};max-width:40em;margin:2em auto;}</style>
-</head><body>${frontMatter}${body}</body></html>`,
+
+  // The same export also feeds the Stage 6.3 preview viewer and correction
+  // cycle: lay the approved text into pages, QA it and diff against the previous
+  // version, so the preview is seeded from one code path.
+  const previousPdf = latestPdfVersion(db, job.projectId);
+  const preview = computePreview(
+    finalText.content,
+    formatData,
+    parsePages(previousPdf?.pages),
   );
+
+  const version = nextPdfVersion(db, job.projectId);
+  const bundleDir = path.join(
+    dataDir(),
+    "exports",
+    job.projectId,
+    `export-v${version}`,
+  );
+  fs.mkdirSync(bundleDir, { recursive: true });
+
+  // Interior PDF: the QA-passed render, copied into the deliverable bundle.
+  const interiorPath = path.join(bundleDir, "book-interior.pdf");
+  fs.copyFileSync(render.filePath, interiorPath);
+
+  // PDF/X variant when the destination prints in CMYK — best effort; a missing
+  // Ghostscript degrades to a checklist note, it never fails the export.
+  const pdfxRequired = colorMode === "CMYK";
+  let pdfxPath: string | undefined;
+  if (pdfxRequired) {
+    const candidate = path.join(bundleDir, "book-pdfx.pdf");
+    if (toCmykPressPdf(interiorPath, candidate)) pdfxPath = candidate;
+  }
+  const pdfxProduced = pdfxPath !== undefined;
+
+  // Cover spread only when a selected cover carries a real file; else pending.
+  let coverPath: string | undefined;
+  if (selectedCover?.filePath && fs.existsSync(selectedCover.filePath)) {
+    coverPath = path.join(
+      bundleDir,
+      `cover-spread${path.extname(selectedCover.filePath)}`,
+    );
+    fs.copyFileSync(selectedCover.filePath, coverPath);
+  }
+
+  const checklistInput: PrintChecklistInput = {
+    projectTitle: project.title,
+    pageCount: info.pageCount,
+    pageSize: getPageSize(formatData.pageSize),
+    colorMode,
+    destinationLabel: destination?.label ?? "unspecified",
+    fontsEmbedded: fontsCheck?.passed ?? false,
+    fontsDetail: fontsCheck?.detail ?? "font embedding unknown",
+    imageResolution: imageCheck?.detail ?? "image resolution unknown",
+    bleedMm: 3,
+    binding: recommendBinding(info.pageCount),
+    hasQrCodes,
+    coverStatus: coverPath ? "attached" : "pending",
+    pdfx: { required: pdfxRequired, produced: pdfxProduced },
+  };
+  const checklist = buildPrintChecklist(checklistInput);
+
+  const checklistPath = path.join(bundleDir, "print-checklist.md");
+  fs.writeFileSync(
+    checklistPath,
+    renderChecklistMarkdown(project.title, checklist),
+  );
+  const oneLinerPath = path.join(bundleDir, "one-liner.txt");
+  fs.writeFileSync(oneLinerPath, checklist.oneLiner + "\n");
+
   sqlite.transaction(() => {
+    // The UI's toggle-checklist is regenerated from this export's real data.
+    replaceChecklist(db, job.projectId, checklistItemLabels(checklist));
     const pdf = insertPdfVersion(db, {
       projectId: job.projectId,
       version,
-      filePath,
+      filePath: interiorPath,
       notes:
-        `Export from FINAL v${finalText.version}, trim ${format.trimSize}` +
-        (destination
-          ? `, destination ${destination.label} (${destination.colorProfile})`
-          : ""),
+        `Export bundle v${version} from FINAL v${finalText.version} / PDF v${render.version} ` +
+        `(${info.pageCount} pp, ${checklist.interior.colorMode})` +
+        (hasQrCodes ? ", QR print-test reminder" : ""),
       jobId: job.id,
+      pages: serializePages(preview.pages),
+      pageCount: preview.pageCount,
+      sourceTextVersion: finalText.version,
+      kind: "export",
+      qa: JSON.stringify(preview.qa),
+      diff: JSON.stringify(preview.diff),
     });
     appendChange(db, {
       projectId: job.projectId,
-      what: `Export v${version} generated (${path.basename(filePath)})`,
+      what:
+        `Export bundle v${version} generated: interior PDF (${info.pageCount} pp), ` +
+        `print-shop checklist, one-liner` +
+        (pdfxProduced ? ", PDF/X (CMYK)" : "") +
+        (coverPath ? ", cover spread" : "") +
+        (hasQrCodes ? "; QR print-test reminder included" : ""),
       where: "stage 8 · exports",
-      why: "print-ready export requested",
+      why: "print-ready export requested; built from the QA-passed render",
       authorizedBy: `job ${job.type} (${job.id})`,
     });
-    markJobSucceeded(db, job.id, { pdfVersionId: pdf.id, filePath }, version);
+    markJobSucceeded(
+      db,
+      job.id,
+      {
+        pdfVersionId: pdf.id,
+        bundleDir,
+        interiorPath,
+        pdfxPath: pdfxPath ?? null,
+        coverPath: coverPath ?? null,
+        checklistPath,
+        oneLinerPath,
+        oneLiner: checklist.oneLiner,
+        pageCount: info.pageCount,
+        colorMode: checklist.interior.colorMode,
+        hasQrCodes,
+        qrReminder: checklist.qrReminder,
+        coverStatus: checklistInput.coverStatus,
+        pdfx: checklistInput.pdfx,
+        fromRenderVersion: render.version,
+      },
+      version,
+    );
   })();
 };
 
@@ -1159,6 +1529,7 @@ const generateMasterTextExec: Executor = async (handle, job) => {
         addReviewItem(db, {
           projectId: job.projectId,
           itemType: "orthotypography",
+          stageKey: "passB",
           excerpt: "",
           question: `Quote-balance check failed: ${p}`,
         });
@@ -1379,15 +1750,9 @@ const detectReactions: Executor = async (handle, job) => {
   })();
 };
 
-function escapeHtml(s: string): string {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
 export const EXECUTORS: Record<string, Executor> = {
   ingest_sources: ingestSources,
+  transcribe_audio: transcribeAudio,
   tone_samples: toneSamples,
   extract_style: extractStyle,
   style_sample: styleSample,

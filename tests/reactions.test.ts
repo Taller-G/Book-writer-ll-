@@ -98,7 +98,8 @@ beforeEach(() => {
   setAiFactoryForTests(
     () =>
       new FakeAiClient((req) => {
-        const content = req.messages[0]?.content ?? "";
+        const raw = req.messages[0]?.content ?? "";
+        const content = typeof raw === "string" ? raw : JSON.stringify(raw);
         if (/applause/i.test(content)) return JSON.stringify({ funny: false, forceful: true, note: "rousing" });
         if (/laughter/i.test(content)) return JSON.stringify({ funny: true, forceful: false, note: "joke" });
         return JSON.stringify({ funny: false, forceful: false, note: "" });

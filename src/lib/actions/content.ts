@@ -3,7 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { getDb } from "../db/client";
 import type { Source } from "../db/schema";
-import { removeSourceFiles, verifyChecksum } from "../files/store";
+import {
+  readOriginal,
+  removeSourceFiles,
+  verifyChecksum,
+  writeDerived,
+} from "../files/store";
 import { parseFormatData } from "../format/config";
 import { appendChange } from "../repo/changeLog";
 import {
@@ -19,10 +24,15 @@ import {
   getReaction,
   setReactionStatus,
 } from "../repo/reactions";
-import { getReviewItem, resolveBatch, resolveReviewItem } from "../repo/review";
+import {
+  getReviewItem,
+  resolveBatch,
+  resolveReviewBatch,
+  resolveReviewItem,
+  type Resolution,
+} from "../repo/review";
 import { msToCharOffset } from "../reactions/detect";
 import { decodeWav, sliceClipWav } from "../reactions/wav";
-import { readOriginal, writeDerived } from "../files/store";
 import { removeStyleRef } from "../repo/styleRefs";
 import {
   addSource,
@@ -212,13 +222,47 @@ export async function keepTextProfileAction(formData: FormData): Promise<void> {
   revalidatePath(stagePath(projectId, 3));
 }
 
+const RESOLUTIONS: readonly Resolution[] = [
+  "accepted",
+  "rejected",
+  "approve",
+  "reject",
+  "option_a",
+  "option_b",
+  "leave_as_is",
+  "cut_sentence",
+  "free_text",
+];
+
+function isResolution(value: string): value is Resolution {
+  return (RESOLUTIONS as readonly string[]).includes(value);
+}
+
+/** Resolve a single review item with the chosen action (option A/B, leave as
+ *  is, cut sentence, free text, approve/reject). */
 export async function resolveReviewAction(formData: FormData): Promise<void> {
   const projectId = String(formData.get("projectId") ?? "");
   const itemId = String(formData.get("itemId") ?? "");
-  const status = String(formData.get("status") ?? "") as "accepted" | "rejected";
-  if (!itemId || (status !== "accepted" && status !== "rejected")) return;
+  // `resolution` is the new field; `status` is the legacy accept/reject name.
+  const resolution = String(formData.get("resolution") ?? formData.get("status") ?? "");
+  if (!itemId || !isResolution(resolution)) return;
   const db = getDb();
-  resolveReviewItem(db, itemId, status, String(formData.get("note") ?? ""));
+  resolveReviewItem(db, itemId, resolution, {
+    note: String(formData.get("note") ?? ""),
+    value: String(formData.get("value") ?? ""),
+  });
+  touchProject(db, projectId);
+  revalidatePath(stagePath(projectId, 6));
+}
+
+/** Resolve many items at once — the bulk path for punctuation batches. */
+export async function resolveReviewBatchAction(formData: FormData): Promise<void> {
+  const projectId = String(formData.get("projectId") ?? "");
+  const resolution = String(formData.get("resolution") ?? "");
+  const ids = formData.getAll("itemId").map(String).filter(Boolean);
+  if (ids.length === 0 || !isResolution(resolution)) return;
+  const db = getDb();
+  resolveReviewBatch(db, ids, resolution, { note: String(formData.get("note") ?? "") });
   touchProject(db, projectId);
   revalidatePath(stagePath(projectId, 6));
 }
@@ -236,14 +280,12 @@ export async function resolveReactionAction(formData: FormData): Promise<void> {
   if (!reaction) return;
   setReactionStatus(db, reactionId, decision === "confirm" ? "confirmed" : "rejected");
   if (itemId && getReviewItem(db, itemId)) {
-    resolveReviewItem(
-      db,
-      itemId,
-      decision === "confirm" ? "accepted" : "rejected",
-      decision === "confirm"
-        ? `confirmed ${reaction.kind} reaction for insertion`
-        : `rejected ${reaction.kind} reaction (false positive)`,
-    );
+    resolveReviewItem(db, itemId, decision === "confirm" ? "accepted" : "rejected", {
+      note:
+        decision === "confirm"
+          ? `confirmed ${reaction.kind} reaction for insertion`
+          : `rejected ${reaction.kind} reaction (false positive)`,
+    });
   }
   touchProject(db, projectId);
   revalidatePath(stagePath(projectId, 5));

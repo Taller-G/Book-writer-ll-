@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull } from "drizzle-orm";
 import type { Db } from "../db/client";
 import {
   checklistItems,
@@ -90,6 +90,22 @@ export function nextPdfVersion(db: Db, projectId: string): number {
   return (listPdfVersions(db, projectId)[0]?.version ?? 0) + 1;
 }
 
+/**
+ * The newest real layout-engine render — a pdf_versions row carrying render
+ * metadata (text_version). Rows written by the Stage 8 export bundle have none
+ * and are skipped, so this always resolves to a Stage 7 typeset PDF + QA report.
+ */
+export function latestRender(db: Db, projectId: string): PdfVersion | undefined {
+  return db
+    .select()
+    .from(pdfVersions)
+    .where(
+      and(eq(pdfVersions.projectId, projectId), isNotNull(pdfVersions.textVersion)),
+    )
+    .orderBy(desc(pdfVersions.version))
+    .get();
+}
+
 export function insertPdfVersion(
   db: Db,
   input: {
@@ -98,17 +114,68 @@ export function insertPdfVersion(
     filePath: string;
     notes?: string;
     jobId?: string;
+    // Render metadata (Stage 6.1–6.2 layout engine).
     textVersion?: number;
     formatHash?: string;
     qaPassed?: number;
     qaReportPath?: string;
+    // Preview / correction-cycle fields (Stage 6.3).
+    /** JSON array of per-page text (the paginator's serialized output). */
+    pages?: string;
+    pageCount?: number;
+    sourceTextVersion?: number;
+    kind?: PdfVersion["kind"];
+    rolledBackFrom?: number;
+    /** JSON QaResult. */
+    qa?: string;
+    /** JSON PageDiff against the previous version. */
+    diff?: string;
   },
 ): PdfVersion {
   const id = newId();
   db.insert(pdfVersions)
-    .values({ ...input, id, notes: input.notes ?? "", createdAt: now() })
+    .values({
+      id,
+      projectId: input.projectId,
+      version: input.version,
+      filePath: input.filePath,
+      notes: input.notes ?? "",
+      jobId: input.jobId,
+      textVersion: input.textVersion,
+      formatHash: input.formatHash,
+      qaPassed: input.qaPassed,
+      qaReportPath: input.qaReportPath,
+      pages: input.pages ?? "[]",
+      pageCount: input.pageCount ?? 0,
+      sourceTextVersion: input.sourceTextVersion,
+      kind: input.kind ?? "export",
+      rolledBackFrom: input.rolledBackFrom,
+      qa: input.qa ?? "{}",
+      diff: input.diff ?? "{}",
+      createdAt: now(),
+    })
     .run();
   return db.select().from(pdfVersions).where(eq(pdfVersions.id, id)).get()!;
+}
+
+export function getPdfVersion(
+  db: Db,
+  projectId: string,
+  version: number,
+): PdfVersion | undefined {
+  return db
+    .select()
+    .from(pdfVersions)
+    .where(and(eq(pdfVersions.projectId, projectId), eq(pdfVersions.version, version)))
+    .get();
+}
+
+/** The current (highest-numbered) PDF version, or undefined when none exist. */
+export function latestPdfVersion(
+  db: Db,
+  projectId: string,
+): PdfVersion | undefined {
+  return listPdfVersions(db, projectId)[0];
 }
 
 export function listCovers(db: Db, projectId: string): Cover[] {
@@ -151,4 +218,19 @@ export function setChecklistDone(db: Db, id: string, done: boolean): void {
     .set({ done: done ? 1 : 0 })
     .where(eq(checklistItems.id, id))
     .run();
+}
+
+/**
+ * Replace the project's checklist with the given labels, in order. The export
+ * derives these from the real PDF every run, so stale items never linger; the
+ * done-state is intentionally reset because the checklist describes a freshly
+ * generated artifact.
+ */
+export function replaceChecklist(db: Db, projectId: string, labels: string[]): void {
+  db.delete(checklistItems).where(eq(checklistItems.projectId, projectId)).run();
+  labels.forEach((label, position) => {
+    db.insert(checklistItems)
+      .values({ id: newId(), projectId, label, position, createdAt: now() })
+      .run();
+  });
 }

@@ -13,11 +13,13 @@ export interface ChangeLogAppend {
   where: string;
   why: string;
   authorizedBy: string;
+  /** Optional structured classification (e.g. a Pass A correction type). */
+  category?: string;
 }
 
 export function appendChange(db: Db, entry: ChangeLogAppend): void {
   db.insert(changeLog)
-    .values({ ...entry, createdAt: now() })
+    .values({ category: null, ...entry, createdAt: now() })
     .run();
 }
 
