@@ -64,6 +64,25 @@ export const editorialContracts = sqliteTable("editorial_contracts", {
   rules: text("rules").notNull().default(""),
   notes: text("notes").notNull().default(""),
   signedAt: text("signed_at"),
+  // Stage 2 decisions; null when the question has not been answered yet.
+  tone: text("tone", {
+    enum: ["neutral", "literary_cinematic", "academic", "conversational"],
+  }),
+  destination: text("destination", {
+    enum: ["personal", "short_run", "isbn", "digital"],
+  }),
+  authorship: text("authorship", { enum: ["own", "third_party", "mixed"] }),
+  rightsNotes: text("rights_notes").notNull().default(""),
+  legalText: text("legal_text").notNull().default(""),
+  version: integer("version").notNull().default(1),
+});
+
+export const contractVersions = sqliteTable("contract_versions", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  version: integer("version").notNull(),
+  snapshot: text("snapshot").notNull(),
+  createdAt: text("created_at").notNull(),
 });
 
 export const styleProfiles = sqliteTable("style_profiles", {
@@ -223,6 +242,7 @@ export const userPrefs = sqliteTable("user_prefs", {
 export type Project = typeof projects.$inferSelect;
 export type Source = typeof sources.$inferSelect;
 export type EditorialContract = typeof editorialContracts.$inferSelect;
+export type ContractVersion = typeof contractVersions.$inferSelect;
 export type StyleProfile = typeof styleProfiles.$inferSelect;
 export type StyleRef = typeof styleRefs.$inferSelect;
 export type StageText = typeof stageTexts.$inferSelect;

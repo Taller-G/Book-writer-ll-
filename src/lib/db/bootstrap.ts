@@ -51,7 +51,25 @@ CREATE TABLE IF NOT EXISTS editorial_contracts (
   mode TEXT NOT NULL CHECK (mode IN ('verbatim','prose','hybrid')),
   rules TEXT NOT NULL DEFAULT '',
   notes TEXT NOT NULL DEFAULT '',
-  signed_at TEXT
+  signed_at TEXT,
+  -- Stage 2 decisions (nullable: pre-existing contracts answered only "mode").
+  tone TEXT,
+  destination TEXT,
+  authorship TEXT,
+  rights_notes TEXT NOT NULL DEFAULT '',
+  legal_text TEXT NOT NULL DEFAULT '',
+  version INTEGER NOT NULL DEFAULT 1
+);
+
+-- Immutable snapshot per contract version: the "decisions made, do not
+-- re-discuss" history every later stage can point back to.
+CREATE TABLE IF NOT EXISTS contract_versions (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  snapshot TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (project_id, version)
 );
 
 CREATE TABLE IF NOT EXISTS style_profiles (
@@ -269,6 +287,17 @@ const ADDED_COLUMNS: Record<string, Array<[name: string, type: string]>> = {
     ["version", "INTEGER NOT NULL DEFAULT 1"],
     ["confirmed_at", "TEXT"],
     ["sample", "TEXT NOT NULL DEFAULT ''"],
+  ],
+  // Stage 2 decision columns, added after the editorial_contracts table
+  // shipped with only mode/rules/notes (nullable: pre-existing contracts
+  // answered only "mode").
+  editorial_contracts: [
+    ["tone", "TEXT"],
+    ["destination", "TEXT"],
+    ["authorship", "TEXT"],
+    ["rights_notes", "TEXT NOT NULL DEFAULT ''"],
+    ["legal_text", "TEXT NOT NULL DEFAULT ''"],
+    ["version", "INTEGER NOT NULL DEFAULT 1"],
   ],
   stage_texts: [["style_profile_version", "INTEGER"]],
   ai_usage: [["system_prompt", "TEXT NOT NULL DEFAULT ''"]],

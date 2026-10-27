@@ -14,6 +14,7 @@ import {
   getConfirmedStyleProfile,
   getStyleProfile,
   parseExcerpts,
+  saveContract,
   type StyleProfileFields,
 } from "@/lib/repo/editorial";
 import { setApiKey } from "@/lib/repo/prefs";
@@ -348,6 +349,8 @@ describe("mid-project profile change", () => {
       title: "S1",
       content: "Um, first paragraph.\n\nSecond paragraph here.",
     });
+    // Text passes refuse to run without a signed editorial contract.
+    saveContract(handle.db, { projectId, mode: "prose", rules: "", notes: "" });
     confirmStyleProfile(handle.db, projectId, CONFIRMED_FIELDS);
     await producePassA();
 

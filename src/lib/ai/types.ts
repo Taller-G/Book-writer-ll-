@@ -4,6 +4,12 @@
 // Every call carries the system-context payload: the project's editorial
 // contract and style profile shape every piece of generated text.
 
+import {
+  authorshipOption,
+  destinationOption,
+  modeOption,
+  toneOption,
+} from "../contract/definitions";
 import type { EditorialContract, StyleProfile } from "../db/schema";
 import type { ModelRole } from "./config";
 
@@ -68,10 +74,30 @@ function safeParseExcerpts(json: string): string[] {
 export function buildSystemPrompt(system: SystemContext): string {
   const parts = [system.instructions.trim()];
   if (system.contract) {
-    parts.push(
-      `Editorial contract (mode: ${system.contract.mode}). ` +
-        `Rules:\n${system.contract.rules}\nNotes:\n${system.contract.notes}`,
-    );
+    const c = system.contract;
+    const lines = [
+      `Editorial contract v${c.version} — decisions made, do not re-discuss.`,
+      `Mode: ${c.mode}. ${modeOption(c.mode).aiDirective}`,
+    ];
+    if (c.tone) {
+      lines.push(`Tone: ${toneOption(c.tone).label}. ${toneOption(c.tone).instruction}`);
+    }
+    if (c.destination) {
+      const d = destinationOption(c.destination);
+      lines.push(`Destination: ${d.label}. Downstream: ${d.downstream}`);
+    }
+    if (c.authorship) {
+      lines.push(
+        `Authorship: ${authorshipOption(c.authorship).label}.` +
+          (c.authorship !== "own"
+            ? " Third-party material is involved: never alter quoted or " +
+              "third-party passages beyond the mode's allowance, and keep " +
+              "attributions intact."
+            : ""),
+      );
+    }
+    lines.push(`Rules:\n${c.rules}\nNotes:\n${c.notes}`);
+    parts.push(lines.join("\n"));
   }
   if (system.styleProfile) {
     const s = system.styleProfile;
