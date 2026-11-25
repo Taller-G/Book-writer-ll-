@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { formatUsd } from "@/lib/ai/estimate";
 import { getDb } from "@/lib/db/client";
 import { getProjectOverview } from "@/lib/overview";
-import { getProjectSpend } from "@/lib/repo/aiUsage";
+import { getProjectSpendBreakdown } from "@/lib/repo/aiUsage";
 import { STAGE_STATUS_LABELS } from "@/lib/stages";
 import { DeleteProjectButton } from "@/components/DeleteProjectButton";
 
@@ -18,7 +18,8 @@ export default async function ProjectOverviewPage({
   const db = getDb();
   const overview = getProjectOverview(db, id);
   if (!overview) notFound();
-  const aiSpend = getProjectSpend(db, id);
+  const spend = getProjectSpendBreakdown(db, id);
+  const aiSpend = spend.total;
 
   const { project, stages, doneCount, resumeStage, nextAction } = overview;
 
@@ -73,6 +74,72 @@ export default async function ProjectOverviewPage({
         >
           Continue → Stage {resumeStage}: {stages[resumeStage - 1].title}
         </Link>
+      </div>
+
+      <div className="card" data-testid="ai-spend-breakdown">
+        <h2>Where the AI spend went</h2>
+        {spend.byStage.length === 0 ? (
+          <p className="muted" data-testid="ai-spend-empty">
+            No AI calls yet.
+          </p>
+        ) : (
+          <>
+            <h3>By stage</h3>
+            <table className="plain" data-testid="spend-by-stage">
+              <thead>
+                <tr>
+                  <th>Stage</th>
+                  <th style={{ textAlign: "right" }}>Cost</th>
+                  <th style={{ textAlign: "right" }}>Prompt tokens</th>
+                  <th style={{ textAlign: "right" }}>Completion tokens</th>
+                </tr>
+              </thead>
+              <tbody>
+                {spend.byStage.map((r) => (
+                  <tr key={r.stage ?? "none"} data-testid="spend-stage-row">
+                    <td>
+                      {r.stage == null ? r.title : `${r.stage}. ${r.title}`}
+                    </td>
+                    <td style={{ textAlign: "right" }}>{formatUsd(r.costUsd)}</td>
+                    <td style={{ textAlign: "right" }}>
+                      {r.promptTokens.toLocaleString()}
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      {r.completionTokens.toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <h3>By model</h3>
+            <table className="plain" data-testid="spend-by-model">
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th>Role</th>
+                  <th style={{ textAlign: "right" }}>Cost</th>
+                  <th style={{ textAlign: "right" }}>Prompt tokens</th>
+                  <th style={{ textAlign: "right" }}>Completion tokens</th>
+                </tr>
+              </thead>
+              <tbody>
+                {spend.byModel.map((r) => (
+                  <tr key={`${r.model}|${r.role}`} data-testid="spend-model-row">
+                    <td>{r.model}</td>
+                    <td>{r.role}</td>
+                    <td style={{ textAlign: "right" }}>{formatUsd(r.costUsd)}</td>
+                    <td style={{ textAlign: "right" }}>
+                      {r.promptTokens.toLocaleString()}
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      {r.completionTokens.toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
       </div>
 
       <div className="card">
